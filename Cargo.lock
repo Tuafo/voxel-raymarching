@@ -2141,19 +2141,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wgpu-demo"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "env_logger",
- "glam",
- "pollster",
- "wgpu",
- "winit",
-]
-
-[[package]]
 name = "wgpu-hal"
 version = "27.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2200,6 +2187,19 @@ dependencies = [
  "wgpu-types",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "wgpu-hello-cube"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "env_logger",
+ "glam",
+ "pollster",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]
