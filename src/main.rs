@@ -1,7 +1,9 @@
 mod app;
 mod camera;
+mod input;
 mod mesh;
 mod model;
+mod vox;
 
 use std::{sync::Arc, time::Instant};
 
@@ -57,6 +59,9 @@ impl ApplicationHandler for Program {
             }
             WindowEvent::Resized(size) => {
                 app.on_resize(size);
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                app.input.on_key_event(&event);
             }
             _ => (),
         }

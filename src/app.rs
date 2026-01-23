@@ -5,11 +5,12 @@ use wgpu::{
     BindGroup, Buffer, Device, Queue, RenderPipeline, Sampler, Surface, Texture, TextureFormat,
     TextureView, util::DeviceExt,
 };
-use winit::window::Window;
+use winit::{keyboard::KeyCode, window::Window};
 
 use crate::{
     camera::Camera,
-    mesh::{Cube, IntoMesh, Mesh},
+    input::Input,
+    mesh::{IntoMesh, Mesh, VoxelMesh},
     model::Model,
 };
 
@@ -17,6 +18,7 @@ use crate::{
 #[derive(Debug)]
 pub struct App {
     pub window: Arc<Window>,
+    pub input: Input,
     device: Device,
     queue: Queue,
     size: UVec2,
@@ -53,7 +55,10 @@ impl App {
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities.formats[0];
 
-        let cube = Cube::new().mesh(&device);
+        let raw = std::include_bytes!("../assets/monu2.vox");
+
+        let cube = VoxelMesh::new(raw).mesh(&device);
+        // let cube = Cube::new().mesh(&device);
         let camera = Camera::new(size);
         let model = Model::new();
 
@@ -194,6 +199,7 @@ impl App {
 
         let _self = Self {
             window,
+            input: Input::default(),
             device,
             queue,
             size,
@@ -216,9 +222,18 @@ impl App {
     }
 
     pub fn render(&mut self, delta_time: &Duration) {
+        // update camera
+        {
+            self.camera.update(delta_time, &self.input);
+            self.queue.write_buffer(
+                &self.camera_uniform,
+                0,
+                bytemuck::cast_slice(&[self.camera.uniform]),
+            );
+        }
         // update model
         {
-            self.model.rotation += delta_time.as_secs_f64() as f32 * glam::Vec3::ONE;
+            // self.model.rotation += delta_time.as_secs_f64() as f32 * glam::Vec3::ONE;
             self.model.update();
             self.queue.write_buffer(
                 &self.model_uniform,
@@ -267,7 +282,7 @@ impl App {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
-            pass.set_index_buffer(self.cube.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_index_buffer(self.cube.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.set_vertex_buffer(0, self.cube.vertex_buffer.slice(..));
             pass.pop_debug_group();
 
@@ -286,13 +301,7 @@ impl App {
 
         self.depth = DepthTexture::new(&self.device, self.size);
 
-        // update camera uniform
-        self.camera.update(self.size);
-        self.queue.write_buffer(
-            &self.camera_uniform,
-            0,
-            bytemuck::cast_slice(&[self.camera.uniform]),
-        );
+        self.camera.size = self.size;
     }
 
     fn configure_surface(&self) {

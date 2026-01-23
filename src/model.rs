@@ -18,7 +18,7 @@ impl Model {
         Self {
             position: glam::Vec3::ZERO,
             rotation: glam::Vec3::ZERO,
-            scale: glam::Vec3::ONE,
+            scale: glam::Vec3::ONE * 0.05,
             uniform: ModelUniform {
                 matrix: glam::Mat4::IDENTITY.to_cols_array_2d(),
             },
