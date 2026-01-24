@@ -1,3 +1,5 @@
 mod chunks;
 mod extensions;
-pub mod lib;
+mod scene;
+
+pub use self::scene::Scene;

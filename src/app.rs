@@ -13,7 +13,7 @@ use crate::{
     input::Input,
     mesh::{IntoMesh, Mesh, VoxelMesh},
     model::Model,
-    ui::EguiRenderer,
+    ui::UI,
 };
 
 /// Main renderer
@@ -25,7 +25,7 @@ pub struct App {
     queue: Queue,
     size: UVec2,
     surface: Surface<'static>,
-    pub ui: EguiRenderer,
+    pub ui: UI,
     format: TextureFormat,
     depth: DepthTexture,
     pipeline: RenderPipeline,
@@ -36,6 +36,7 @@ pub struct App {
     camera: Camera,
     model: Model,
     cube: Mesh,
+    frame_avg: Duration,
 }
 
 impl App {
@@ -58,7 +59,7 @@ impl App {
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities.formats[0];
 
-        let raw = std::include_bytes!("../assets/winter.vox");
+        let raw = std::include_bytes!("../assets/cars.vox");
 
         let cube = VoxelMesh::new(raw).mesh(&device);
         // let cube = Cube::new().mesh(&device);
@@ -200,7 +201,7 @@ impl App {
             render_pipeline
         };
 
-        let ui = EguiRenderer::new(&device, format, None, 1, &window);
+        let ui = UI::new(&device, format, &window);
 
         let _self = Self {
             window,
@@ -220,6 +221,7 @@ impl App {
             camera_uniform,
             model_bind_group,
             model_uniform,
+            frame_avg: Duration::ZERO,
         };
 
         _self.configure_surface();
@@ -296,37 +298,25 @@ impl App {
             pass.draw_indexed(0..self.cube.index_count, 0, 0..1);
         }
 
+        const FRAME_AVG_ALPHA: f64 = 0.02;
+        self.frame_avg =
+            self.frame_avg.mul_f64(1.0 - FRAME_AVG_ALPHA) + delta_time.mul_f64(FRAME_AVG_ALPHA);
+
         // render ui
         {
             self.ui.begin_frame(&self.window);
 
-            egui::Window::new("winit + egui + wgpu says hello!")
+            egui::Window::new("Stats")
+                .default_open(true)
                 .resizable(true)
                 .vscroll(true)
-                .default_open(true)
+                .default_size([200.0, 120.0])
                 .show(self.ui.context(), |ui| {
-                    ui.label(format!("Frame: {:.2}", delta_time.as_secs_f64() * 1000.0));
-
-                    if ui.button("Button!").clicked() {
-                        println!("boom!")
-                    }
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "Pixels per point: {}",
-                            self.ui.context().pixels_per_point()
-                        ));
-                        if ui.button("-").clicked() {
-                            // state.scale_factor = (state.scale_factor - 0.1).max(0.3);
-                        }
-                        if ui.button("+").clicked() {
-                            // state.scale_factor = (state.scale_factor + 0.1).min(3.0);
-                        }
-                    });
+                    ui.label(format!("FPS: {:.2}", 1.0 / self.frame_avg.as_secs_f64()));
+                    ui.label(format!("Frame: {:#?}", self.frame_avg));
                 });
 
-            self.ui.end_frame_and_draw(
+            self.ui.render(
                 &self.device,
                 &self.queue,
                 &mut encoder,
@@ -364,7 +354,7 @@ impl App {
                 width: self.size.x,
                 height: self.size.y,
                 desired_maximum_frame_latency: 2,
-                present_mode: wgpu::PresentMode::AutoVsync,
+                present_mode: wgpu::PresentMode::AutoNoVsync,
             },
         );
     }

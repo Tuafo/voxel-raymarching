@@ -7,10 +7,10 @@ use std::{
 
 use glam::{IVec3, IVec4, Mat4, Vec4};
 
-use crate::vox::lib::ModelID;
+use crate::vox::scene::ModelID;
 use crate::vox::{
     extensions::{PropertiesExt, ReadExt},
-    lib::MaterialSurface,
+    scene::MaterialSurface,
 };
 
 pub trait ChunkBody {
