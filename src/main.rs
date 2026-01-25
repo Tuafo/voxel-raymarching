@@ -6,7 +6,10 @@ mod vox;
 use std::{sync::Arc, time::Instant};
 
 use pollster::block_on;
-use winit::{application::ApplicationHandler, event::WindowEvent, window::Window};
+use winit::{
+    application::ApplicationHandler, event::WindowEvent, platform::x11::WindowAttributesExtX11,
+    window::Window,
+};
 
 use crate::{
     engine::{Engine, EngineCtx},
@@ -178,15 +181,6 @@ impl ApplicationHandler for Program {
     }
 }
 
-fn main() {
-    env_logger::init();
-
-    let event_loop = winit::event_loop::EventLoop::new().unwrap();
-    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-
-    event_loop.run_app(&mut Program::new()).unwrap();
-}
-
 pub trait SizedWindow {
     fn size(&self) -> glam::UVec2;
 }
@@ -195,4 +189,13 @@ impl SizedWindow for Window {
         let size = self.inner_size();
         glam::uvec2(size.width, size.height)
     }
+}
+
+fn main() {
+    env_logger::init();
+
+    let event_loop = winit::event_loop::EventLoop::new().unwrap();
+    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+
+    event_loop.run_app(&mut Program::new()).unwrap();
 }

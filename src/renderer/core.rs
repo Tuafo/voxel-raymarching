@@ -11,6 +11,7 @@ use crate::{
     SizedWindow,
     engine::{CameraUniform, Engine, ModelUniform},
     renderer::{
+        buffers::{SceneDataBuffer, VoxelDataBuffer},
         mesh::{IntoMesh, Mesh, VoxelMesh},
         quad::Quad,
     },
@@ -37,10 +38,17 @@ pub struct Renderer {
     // pipeline_raymarch: ComputePipeline,
     // raymarch_bind_group: BindGroup,
     pipelines: Pipelines,
-    bind_groups: BindGroups,
     textures: Textures,
-    mesh: Mesh,
+    uniforms: Uniforms,
+    bind_groups: BindGroups,
     quad: Quad,
+}
+
+struct Uniforms {
+    scene: Buffer,
+    scene_data: SceneDataBuffer,
+    voxels: Buffer,
+    voxels_data: VoxelDataBuffer,
 }
 
 struct Pipelines {
@@ -49,12 +57,12 @@ struct Pipelines {
 }
 
 struct BindGroups {
-    raymarch: BindGroup,
-    post_fx: BindGroup,
+    raymarch: Option<BindGroup>,
+    post_fx: Option<BindGroup>,
 }
 
 struct Textures {
-    color: Texture,
+    color: Option<Texture>,
 }
 
 impl Renderer {
@@ -135,121 +143,97 @@ impl Renderer {
 
         //     (uniform_buffer, bind_group, layout)
         // };
-        let size = window.size();
 
-        let textures = Textures {
-            color: device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("out texture"),
-                size: wgpu::Extent3d {
-                    width: size.x,
-                    height: size.y,
-                    depth_or_array_layers: 1,
-                },
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }),
-        };
+        let textures = Textures { color: None };
 
-        let raymarch_pipeline = {
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("raymarch shader"),
-                source: wgpu::ShaderSource::Wgsl(std::include_str!("../shaders/main.wgsl").into()),
+        let uniforms = {
+            let scene_data = SceneDataBuffer::new(&engine.scene);
+            let scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("scene data uniform buffer"),
+                contents: bytemuck::cast_slice(&[scene_data]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("raymarch pipeline"),
-                layout: None,
-                module: &shader,
-                entry_point: Some("compute_main"),
-                compilation_options: Default::default(),
-                cache: None,
-            })
-        };
-
-        let color_texture_view = textures.color.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("raymarch out texture storage view"),
-            ..Default::default()
-        });
-
-        let raymarch_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("raymarch bind group"),
-            layout: &raymarch_pipeline.get_bind_group_layout(0),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&color_texture_view),
-            }],
-        });
-
-        let post_fx_pipeline = {
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("main shader"),
-                source: wgpu::ShaderSource::Wgsl(std::include_str!("../shaders/fx.wgsl").into()),
+            let voxels_data = VoxelDataBuffer::new(&engine.scene);
+            let voxels = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("voxel data storage buffer"),
+                contents: bytemuck::cast_slice(&voxels_data.0),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("post fx pipeline"),
-                layout: None,
-                vertex: wgpu::VertexState {
+            Uniforms {
+                scene,
+                scene_data,
+                voxels,
+                voxels_data,
+            }
+        };
+
+        let bind_groups = BindGroups {
+            raymarch: None,
+            post_fx: None,
+        };
+
+        let pipelines = {
+            let raymarch = {
+                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("raymarch shader"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        std::include_str!("../shaders/main.wgsl").into(),
+                    ),
+                });
+
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("raymarch pipeline"),
+                    layout: None,
                     module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: crate::renderer::quad::VERTEX_SIZE,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 0,
+                    entry_point: Some("compute_main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+            };
+
+            let post_fx = {
+                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("main shader"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        std::include_str!("../shaders/fx.wgsl").into(),
+                    ),
+                });
+
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("post fx pipeline"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: crate::renderer::quad::VERTEX_SIZE,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &[wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 0,
+                                shader_location: 0,
+                            }],
                         }],
-                    }],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(format.into())],
-                }),
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                multiview: None,
-                cache: None,
-            })
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(format.into())],
+                    }),
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    multiview: None,
+                    cache: None,
+                })
+            };
+
+            Pipelines { raymarch, post_fx }
         };
-
-        let color_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("color sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: f32::MAX,
-            compare: None,
-            anisotropy_clamp: 1,
-            border_color: None,
-        });
-
-        let post_fx_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("post fx bind group"),
-            layout: &post_fx_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&color_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&color_sampler),
-                },
-            ],
-        });
 
         // let pipeline = {
         //     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -314,35 +298,96 @@ impl Renderer {
         //     render_pipeline
         // };
         let quad = Quad::new(device);
-        let mesh = VoxelMesh::new(&engine.scene).mesh(device);
 
-        Self {
-            // depth,
-            // pipeline,
-            // camera_bind_group,
-            // camera_uniform,
-            // model_bind_group,
-            // model_uniform,
-            // pipeline_raymarch,
-            // raymarch_bind_group,
-            pipelines: Pipelines {
-                raymarch: raymarch_pipeline,
-                post_fx: post_fx_pipeline,
-            },
-            bind_groups: BindGroups {
-                raymarch: raymarch_bg,
-                post_fx: post_fx_bg,
-            },
+        let mut _self = Self {
+            pipelines,
+            bind_groups,
             textures,
+            uniforms,
             quad,
-            mesh,
-        }
+        };
+
+        _self.update_screen_resources(&window, device);
+
+        return _self;
     }
 
     pub fn handle_resize(&mut self, window: &winit::window::Window, device: &wgpu::Device) {
+        self.update_screen_resources(window, device);
+    }
+
+    fn update_screen_resources(&mut self, window: &winit::window::Window, device: &wgpu::Device) {
         let size = window.size();
 
-        // self.depth = DepthTexture::new(device, size);
+        let tex_color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("out texture"),
+            size: wgpu::Extent3d {
+                width: size.x,
+                height: size.y,
+                depth_or_array_layers: 1,
+            },
+            sample_count: 1,
+            format: wgpu::TextureFormat::Rgba16Float,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            mip_level_count: 1,
+            view_formats: &[],
+        });
+        let view_color = tex_color.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("raymarch out texture storage view"),
+            ..Default::default()
+        });
+        let sampler_color = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("color sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: f32::MAX,
+            compare: None,
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
+        self.textures.color = Some(tex_color);
+
+        let bg_raymarch = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("raymarch bind group"),
+            layout: &self.pipelines.raymarch.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view_color),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.uniforms.scene.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.uniforms.voxels.as_entire_binding(),
+                },
+            ],
+        });
+        self.bind_groups.raymarch = Some(bg_raymarch);
+
+        let bg_post_fx = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("post fx bind group"),
+            layout: &self.pipelines.post_fx.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view_color),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler_color),
+                },
+            ],
+        });
+        self.bind_groups.post_fx = Some(bg_post_fx);
     }
 
     pub fn frame<'a>(&mut self, delta_time: &Duration, ctx: &'a mut RendererCtx) {
@@ -418,44 +463,6 @@ impl Renderer {
             pass.insert_debug_marker("post fx");
             pass.draw_indexed(0..self.quad.index_count, 0, 0..1);
         }
-
-        // // main pass
-        // {
-        //     let descriptor = wgpu::RenderPassDescriptor {
-        //         label: Some("main"),
-        //         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        //             view: &texture_view,
-        //             depth_slice: None,
-        //             resolve_target: None,
-        //             ops: wgpu::Operations {
-        //                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-        //                 store: wgpu::StoreOp::Store,
-        //             },
-        //         })],
-        //         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-        //             view: &self.depth.view,
-        //             depth_ops: Some(wgpu::Operations {
-        //                 load: wgpu::LoadOp::Clear(1.0),
-        //                 store: wgpu::StoreOp::Store,
-        //             }),
-        //             stencil_ops: None,
-        //         }),
-        //         timestamp_writes: None,
-        //         occlusion_query_set: None,
-        //     };
-        //     let mut pass = encoder.begin_render_pass(&descriptor);
-
-        //     pass.push_debug_group("prepare data for draw");
-        //     pass.set_pipeline(&self.pipeline);
-        //     pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        //     pass.set_bind_group(1, &self.model_bind_group, &[]);
-        //     pass.set_index_buffer(self.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        //     pass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
-        //     pass.pop_debug_group();
-
-        //     pass.insert_debug_marker("draw cube");
-        //     pass.draw_indexed(0..self.mesh.index_count, 0, 0..1);
-        // }
 
         ctx.ui.frame(&mut UiCtx {
             window: ctx.window,
