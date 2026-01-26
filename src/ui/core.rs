@@ -6,10 +6,10 @@ pub struct Ui {
     pub frame_avg: Duration,
     pub voxel_count: u32,
     pub scene_size: glam::IVec3,
-    pub camera_pos: glam::Vec3,
-    pub camera_forward: glam::Vec3,
-    pub camera_near: f32,
-    pub camera_far: f32,
+    pub camera_pos: glam::DVec3,
+    pub camera_forward: glam::DVec3,
+    pub camera_near: f64,
+    pub camera_far: f64,
     renderer: UIRenderer,
 }
 
@@ -62,7 +62,7 @@ impl Ui {
                     ctx.window.size().y
                 ));
                 ui.label(format!("FPS: {:.2}", 1.0 / self.frame_avg.as_secs_f64()));
-                ui.label(format!("Frame: {:#?}", self.frame_avg));
+                ui.label(format!("Frame: {:.2?}", self.frame_avg));
 
                 ui.separator();
 
@@ -71,10 +71,10 @@ impl Ui {
 
                 ui.separator();
 
-                ui.label(format!("Camera Position: {}", self.camera_pos));
-                ui.label(format!("View Forward: {}", self.camera_forward));
-                ui.label(format!("Camera Near: {}", self.camera_near));
-                ui.label(format!("Camera Far: {}", self.camera_far));
+                ui.label(format!("Camera Position: {:.2}", self.camera_pos));
+                ui.label(format!("View Forward: {:.2}", self.camera_forward));
+                ui.label(format!("Camera Near: {:.2}", self.camera_near));
+                ui.label(format!("Camera Far: {:.2}", self.camera_far));
             });
 
         self.renderer.render(

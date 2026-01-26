@@ -23,6 +23,9 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
+const EPSILON: f32 = 1.0 / 65536.0;
+const DDA_MAX_STEPS: u32 = 1000u;
+
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
     let dimensions = textureDimensions(out_texture).xy;
@@ -40,38 +43,38 @@ fn compute_main(in: ComputeIn) {
 
     // DDA ray marching
     // see https://cse.yorku.ca/~amana/research/grid.pdf
-    let step = vec3<i32>(step(-ray.direction, vec3(0.0)) - step(ray.direction, vec3(0.0)));
-    let t_delta = abs(vec3(1.0) / (ray.direction + 1e-5));
+    let pos_step = vec3<i32>(step(-ray.direction, vec3(0.0)) - step(ray.direction, vec3(0.0)));
+    let t_delta = abs(vec3(1.0) / (ray.direction + EPSILON));
     var pos = vec3<i32>(floor(ray.origin));
     var t_max = vec3<f32>(0.0);
     if ray.direction.x > 0.0 {
-        t_max.x = floor(ray.origin.x) + 1.0 - ray.origin.x;
+        t_max.x = 1.0 - fract(ray.origin.x);
     } else {
-        t_max.x = ray.origin.x - floor(ray.origin.x);
+        t_max.x = fract(ray.origin.x);
     }
     if ray.direction.y > 0.0 {
-        t_max.y = floor(ray.origin.y) + 1.0 - ray.origin.y;
+        t_max.y = 1.0 - fract(ray.origin.y);
     } else {
-        t_max.y = ray.origin.y - floor(ray.origin.y);
+        t_max.y = fract(ray.origin.y);
     }
     if ray.direction.z > 0.0 {
-        t_max.z = floor(ray.origin.z) + 1.0 - ray.origin.z;
+        t_max.z = 1.0 - fract(ray.origin.z);
     } else {
-        t_max.z = ray.origin.z - floor(ray.origin.z);
+        t_max.z = fract(ray.origin.z);
     }
     t_max *= t_delta;
 
-    var res = 0u;
-    while res == 0u {
+    var res = voxel(pos);
+    for (var i = 0u; i < DDA_MAX_STEPS && res == 0u; i++) {
         if t_max.x < t_max.y {
             if t_max.x < t_max.z {
-                pos.x += step.x;
+                pos.x += pos_step.x;
                 if pos.x < 0 || pos.x >= size.x {
                     break;
                 }
                 t_max.x += t_delta.x;
             } else {
-                pos.z += step.z;
+                pos.z += pos_step.z;
                 if pos.z < 0 || pos.z >= size.z {
                     break;
                 }
@@ -79,13 +82,13 @@ fn compute_main(in: ComputeIn) {
             }
         } else {
             if t_max.y < t_max.z {
-                pos.y += step.y;
+                pos.y += pos_step.y;
                 if pos.y < 0 || pos.y >= size.y {
                     break;
                 }
                 t_max.y += t_delta.y;
             } else {
-                pos.z += step.z;
+                pos.z += pos_step.z;
                 if pos.z < 0 || pos.z >= size.z {
                     break;
                 }
@@ -126,29 +129,34 @@ fn start_ray(uv: vec2<f32>) -> Ray {
     let ls_direction = normalize((model.inv_transform * vec4<f32>(ws_direction, 0.0)).xyz);
 
     // aabb simple test and project on the scene volume
-    let min = vec3<f32>(0.0);
-    let max = vec3<f32>(scene.size);
+    let bd_min = vec3<f32>(0.0);
+    let bd_max = vec3<f32>(scene.size);
 
-    let t_min = (min - ls_origin) / ls_direction;
-    let t_max = (max - ls_origin) / ls_direction;
+    let inv_dir = 1.0 / safe_vec3(ls_direction);
+    let t0 = (bd_min - ls_origin) * inv_dir;
+    let t1 = (bd_max - ls_origin) * inv_dir;
 
-    let t1 = min(t_min, t_max);
-    let t2 = max(t_min, t_max);
+    let tmin = min(t0, t1);
+    let tmax = max(t0, t1);
 
-    let t_near = max(max(t1.x, t1.y), t1.z);
-    let t_far = min(min(t2.x, t2.y), t2.z);
+    let t_near = max(max(tmin.x, tmin.y), tmin.z);
+    let t_far = min(min(tmax.x, tmax.y), tmax.z);
 
     var ray: Ray;
-    ray.origin = ls_origin + max(0.0, t_near) * ls_direction;
+    ray.origin = ls_origin + (max(0.0, t_near) + 1e-3) * ls_direction;
     ray.direction = ls_direction;
-    ray.in_bounds = t_near <= t_far && t_far >= 0.0;
+    ray.in_bounds = t_near < t_far && t_far > 0.0;
     return ray;
-} 
+}
+
+fn safe_vec3(v: vec3<f32>) -> vec3<f32> {
+    return sign(v) * max(vec3(EPSILON), abs(v));
+}
 
 /// Gets palette index at the given local space position
 fn voxel(position: vec3<i32>) -> u32 {
-    let index = position.x * i32(scene.size.x) * i32(scene.size.y) + position.y * i32(scene.size.y) + position.z;
-    return (voxels[index >> 2u] >> u32(3 - i32(u32(index) & 0x3u))) & 0xFFu;
+    let index = position.x * i32(scene.size.y) * i32(scene.size.z) + position.y * i32(scene.size.z) + position.z;
+    return (voxels[index >> 0x2u] >> (8u * (u32(index) & 0x3u))) & 0xFFu;
 }
 
 /// Palette color lookup

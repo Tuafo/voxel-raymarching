@@ -29,7 +29,7 @@ impl Engine {
         let camera = Camera::new(window.size());
 
         let scene = {
-            let src = std::include_bytes!("../../assets/monu2.vox");
+            let src = std::include_bytes!("../../assets/cars.vox");
             Scene::load(src).unwrap()
         };
 

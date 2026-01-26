@@ -40,6 +40,7 @@ pub struct Renderer {
     textures: Textures,
     uniforms: Uniforms,
     bind_groups: BindGroups,
+    timing: Option<RenderTimer>,
     quad: Quad,
 }
 
@@ -77,78 +78,6 @@ impl Renderer {
         format: wgpu::TextureFormat,
         engine: &Engine,
     ) -> Self {
-        // let depth = DepthTexture::new(&device, window.size());
-
-        // let (camera_uniform, camera_bind_group, camera_bind_group_layout) = {
-        //     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        //         label: Some("camera bind group layout"),
-        //         entries: &[wgpu::BindGroupLayoutEntry {
-        //             binding: 0,
-        //             visibility: wgpu::ShaderStages::VERTEX,
-        //             ty: wgpu::BindingType::Buffer {
-        //                 ty: wgpu::BufferBindingType::Uniform,
-        //                 has_dynamic_offset: false,
-        //                 min_binding_size: wgpu::BufferSize::new(64),
-        //             },
-        //             count: None,
-        //         }],
-        //     });
-
-        //     let uniform_buffer = {
-        //         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //             label: Some("camera uniform buffer"),
-        //             contents: bytemuck::cast_slice(&[CameraUniform::default()]),
-        //             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        //         })
-        //     };
-
-        //     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        //         label: Some("camera bind group"),
-        //         layout: &layout,
-        //         entries: &[wgpu::BindGroupEntry {
-        //             binding: 0,
-        //             resource: uniform_buffer.as_entire_binding(),
-        //         }],
-        //     });
-
-        //     (uniform_buffer, bind_group, layout)
-        // };
-
-        // let (model_uniform, model_bind_group, model_bind_group_layout) = {
-        //     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        //         label: Some("model bind group layout"),
-        //         entries: &[wgpu::BindGroupLayoutEntry {
-        //             binding: 0,
-        //             visibility: wgpu::ShaderStages::VERTEX,
-        //             ty: wgpu::BindingType::Buffer {
-        //                 ty: wgpu::BufferBindingType::Uniform,
-        //                 has_dynamic_offset: false,
-        //                 min_binding_size: wgpu::BufferSize::new(64),
-        //             },
-        //             count: None,
-        //         }],
-        //     });
-
-        //     let uniform_buffer = {
-        //         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //             label: Some("model uniform buffer"),
-        //             contents: bytemuck::cast_slice(&[ModelUniform::default()]),
-        //             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        //         })
-        //     };
-
-        //     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        //         label: Some("model bind group"),
-        //         layout: &layout,
-        //         entries: &[wgpu::BindGroupEntry {
-        //             binding: 0,
-        //             resource: uniform_buffer.as_entire_binding(),
-        //         }],
-        //     });
-
-        //     (uniform_buffer, bind_group, layout)
-        // };
-
         let textures = Textures { color: None };
 
         let uniforms = {
@@ -279,68 +208,12 @@ impl Renderer {
                 model,
             }
         };
-        // let pipeline = {
-        //     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        //         label: Some("main pipeline layout"),
-        //         bind_group_layouts: &[&camera_bind_group_layout, &model_bind_group_layout],
-        //         push_constant_ranges: &[],
-        //     });
 
-        //     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        //         label: Some("main shader"),
-        //         source: wgpu::ShaderSource::Wgsl(std::include_str!("../shaders/base.wgsl").into()),
-        //     });
+        let timing = device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+            .then(|| RenderTimer::new(device));
 
-        //     let vertex_buffers = [wgpu::VertexBufferLayout {
-        //         array_stride: crate::renderer::mesh::VERTEX_SIZE,
-        //         step_mode: wgpu::VertexStepMode::Vertex,
-        //         attributes: &[
-        //             wgpu::VertexAttribute {
-        //                 format: wgpu::VertexFormat::Float32x4,
-        //                 offset: 0,
-        //                 shader_location: 0,
-        //             },
-        //             wgpu::VertexAttribute {
-        //                 format: wgpu::VertexFormat::Float32x3,
-        //                 offset: 4 * 4,
-        //                 shader_location: 1,
-        //             },
-        //         ],
-        //     }];
-
-        //     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        //         label: Some("main pipeline"),
-        //         layout: Some(&pipeline_layout),
-        //         vertex: wgpu::VertexState {
-        //             module: &shader,
-        //             entry_point: Some("vs_main"),
-        //             buffers: &vertex_buffers,
-        //             compilation_options: Default::default(),
-        //         },
-        //         fragment: Some(wgpu::FragmentState {
-        //             module: &shader,
-        //             entry_point: Some("fs_main"),
-        //             compilation_options: Default::default(),
-        //             targets: &[Some(format.into())],
-        //         }),
-        //         primitive: wgpu::PrimitiveState {
-        //             cull_mode: Some(wgpu::Face::Back),
-        //             ..Default::default()
-        //         },
-        //         depth_stencil: Some(wgpu::DepthStencilState {
-        //             format: DepthTexture::FORMAT,
-        //             depth_write_enabled: true,
-        //             depth_compare: wgpu::CompareFunction::Less,
-        //             stencil: wgpu::StencilState::default(),
-        //             bias: wgpu::DepthBiasState::default(),
-        //         }),
-        //         multisample: wgpu::MultisampleState::default(),
-        //         multiview: None,
-        //         cache: None,
-        //     });
-
-        //     render_pipeline
-        // };
         let quad = Quad::new(device);
 
         let mut _self = Self {
@@ -348,6 +221,7 @@ impl Renderer {
             bind_groups,
             textures,
             uniforms,
+            timing,
             quad,
         };
 
@@ -467,7 +341,13 @@ impl Renderer {
         {
             let descriptor = wgpu::ComputePassDescriptor {
                 label: Some("raymarch"),
-                timestamp_writes: None,
+                timestamp_writes: self.timing.as_ref().map(|timing| {
+                    wgpu::ComputePassTimestampWrites {
+                        query_set: &timing.query_set,
+                        beginning_of_pass_write_index: Some(0),
+                        end_of_pass_write_index: Some(1),
+                    }
+                }),
             };
             let mut pass = encoder.begin_compute_pass(&descriptor);
 
@@ -495,7 +375,13 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                timestamp_writes: None,
+                timestamp_writes: self.timing.as_ref().map(|timing| {
+                    wgpu::RenderPassTimestampWrites {
+                        query_set: &timing.query_set,
+                        beginning_of_pass_write_index: Some(2),
+                        end_of_pass_write_index: Some(3),
+                    }
+                }),
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
             };
@@ -512,6 +398,24 @@ impl Renderer {
             pass.draw_indexed(0..self.quad.index_count, 0, 0..1);
         }
 
+        // if let Some(timing) = &self.timing {
+        //     encoder.resolve_query_set(
+        //         &timing.query_set,
+        //         0..(2 * RenderTimer::QUERY_PASS_COUNT),
+        //         &timing.resolve_buffer,
+        //         0,
+        //     );
+        //     timing.result_buffer.map
+        //     timing.result_buffer.unmap();
+        //     encoder.copy_buffer_to_buffer(
+        //         &timing.resolve_buffer,
+        //         0,
+        //         &timing.result_buffer,
+        //         0,
+        //         timing.result_buffer.size(),
+        //     );
+        // }
+
         ctx.ui.frame(&mut UiCtx {
             window: ctx.window,
             device: ctx.device,
@@ -521,8 +425,63 @@ impl Renderer {
         });
 
         ctx.queue.submit([encoder.finish()]);
+
         ctx.window.pre_present_notify();
         surface_texture.present();
+
+        // if let Some(timing) = &self.timing {
+        //     let result_buffer = Arc::clone(&timing.result_buffer);
+        //     timing
+        //         .result_buffer
+        //         .map_async(wgpu::MapMode::Read, .., move |res| {
+        //             // if res.is_err() {
+        //             //     return;
+        //             // }
+        //             let view = result_buffer.get_mapped_range(..);
+        //             let timestamps: &[u64] = bytemuck::cast_slice(&*view);
+        //             let time_raymarch = timestamps[1] - timestamps[0];
+        //             let time_post_fx = timestamps[3] - timestamps[2];
+        //             dbg!((time_raymarch, time_post_fx));
+
+        //             drop(view);
+        //             result_buffer.unmap();
+        //         });
+        // }
+    }
+}
+
+struct RenderTimer {
+    query_set: wgpu::QuerySet,
+    resolve_buffer: wgpu::Buffer,
+    result_buffer: Arc<wgpu::Buffer>,
+}
+impl RenderTimer {
+    const QUERY_PASS_COUNT: u32 = 2;
+
+    fn new(device: &Device) -> Self {
+        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("timestamp query set"),
+            ty: wgpu::QueryType::Timestamp,
+            count: Self::QUERY_PASS_COUNT * 2,
+        });
+        let resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("timestamp query resolve buffer"),
+            size: Self::QUERY_PASS_COUNT as u64 * 2 * 8,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("timestamp query result buffer"),
+            size: Self::QUERY_PASS_COUNT as u64 * 2 * 8,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            query_set,
+            resolve_buffer,
+            result_buffer: Arc::new(result_buffer),
+        }
     }
 }
 

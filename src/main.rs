@@ -6,10 +6,7 @@ mod vox;
 use std::{sync::Arc, time::Instant};
 
 use pollster::block_on;
-use winit::{
-    application::ApplicationHandler, event::WindowEvent, platform::x11::WindowAttributesExtX11,
-    window::Window,
-};
+use winit::{application::ApplicationHandler, event::WindowEvent, window::Window};
 
 use crate::{
     engine::{Engine, EngineCtx},
@@ -17,14 +14,31 @@ use crate::{
     ui::Ui,
 };
 
-// #[derive(Debug)]
 struct Program {
     state: Option<State>,
 }
 
-impl Program {
-    fn new() -> Self {
-        Self { state: None }
+impl ApplicationHandler for Program {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let cfg = Window::default_attributes().with_title("wgpu demo");
+
+        let window = event_loop.create_window(cfg).unwrap();
+        let window = Arc::new(window);
+
+        let state = block_on(State::new(window.clone()));
+        self.state = Some(state);
+
+        window.request_redraw();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        let state = self.state.as_mut().unwrap();
+        state.handle_input(event_loop, &event);
     }
 }
 
@@ -48,8 +62,16 @@ impl State {
             .await
             .unwrap();
 
+        let mut features = wgpu::Features::default();
+        if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            features |= wgpu::Features::TIMESTAMP_QUERY;
+        }
+
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features: features,
+                ..Default::default()
+            })
             .await
             .unwrap();
 
@@ -157,30 +179,6 @@ impl State {
     }
 }
 
-impl ApplicationHandler for Program {
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let cfg = Window::default_attributes().with_title("wgpu demo");
-
-        let window = event_loop.create_window(cfg).unwrap();
-        let window = Arc::new(window);
-
-        let state = block_on(State::new(window.clone()));
-        self.state = Some(state);
-
-        window.request_redraw();
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        _window_id: winit::window::WindowId,
-        event: WindowEvent,
-    ) {
-        let state = self.state.as_mut().unwrap();
-        state.handle_input(event_loop, &event);
-    }
-}
-
 pub trait SizedWindow {
     fn size(&self) -> glam::UVec2;
 }
@@ -197,5 +195,5 @@ fn main() {
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
-    event_loop.run_app(&mut Program::new()).unwrap();
+    event_loop.run_app(&mut Program { state: None }).unwrap();
 }

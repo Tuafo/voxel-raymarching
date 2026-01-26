@@ -28,7 +28,7 @@ impl SceneDataBuffer {
     }
 }
 
-pub struct VoxelDataBuffer(pub Vec<u8>);
+pub struct VoxelDataBuffer(pub Vec<u32>);
 
 impl VoxelDataBuffer {
     pub fn new(scene: &crate::vox::Scene) -> Self {
@@ -37,13 +37,12 @@ impl VoxelDataBuffer {
         let x_run = scene.size.y as usize * scene.size.z as usize;
         let y_run = scene.size.z as usize;
 
-        let mut voxels = vec![0; scene.size.element_product() as usize];
+        let mut voxels = vec![0; ((scene.size.element_product() as usize) + 3) >> 2];
         for instance in scene.instances() {
             for (pos, palette_index) in instance.voxels() {
                 let pos = (pos - scene.base).as_usizevec3();
                 let index = pos.x * x_run + pos.y * y_run + pos.z;
-
-                voxels[index] = palette_index;
+                voxels[index >> 2] |= (palette_index as u32) << 8 * (index & 3);
             }
         }
 
@@ -63,9 +62,9 @@ pub struct CameraDataBuffer {
 
 impl CameraDataBuffer {
     pub fn update(&mut self, camera: &crate::engine::Camera) {
-        self.view_proj = camera.view_proj.to_cols_array_2d();
-        self.inv_view_proj = camera.inv_view_proj.to_cols_array_2d();
-        self.ws_position = camera.position.to_array();
+        self.view_proj = camera.view_proj.as_mat4().to_cols_array_2d();
+        self.inv_view_proj = camera.inv_view_proj.as_mat4().to_cols_array_2d();
+        self.ws_position = camera.position.as_vec3().to_array();
     }
 }
 
