@@ -11,6 +11,7 @@ use crate::{
     SizedWindow,
     engine::Engine,
     renderer::{
+        brick_tree::BrickMap,
         buffers::{CameraDataBuffer, ModelDataBuffer, SceneDataBuffer, VoxelDataBuffer},
         quad::Quad,
         tree1::PTree,
@@ -83,6 +84,7 @@ impl Renderer {
 
         let uniforms = {
             let voxels_data = VoxelDataBuffer::new(&engine.scene);
+            BrickMap::from_scene(&engine.scene);
             // let voxels_tree = PTree::from_scene(&engine.scene);
             let voxels = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel data storage buffer"),

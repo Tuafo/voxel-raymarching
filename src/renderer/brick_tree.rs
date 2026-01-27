@@ -1,33 +1,84 @@
-pub struct BrickTree {
-    size: glam::UVec3,
-    bricks: glam::Uvec3,
-    shift: glam::UVec3,
-    index: Box<[u32; 512]>,
-    voxels: Vec<[u8; 512]>,
+pub struct BrickMap {
+    index_bounds: glam::UVec3,
+    index: Vec<IndexChunk>,
+    data: Vec<DataChunk>,
 }
 
-// type NodeId = u32;
-
-// #[derive(Clone, Copy)]
-// enum Node {
-//     Leaf(u8),
-//     /// Here, `Internal(NodeId)` stores the index of the first child node
-//     Internal(NodeId),
-// }
-
-impl BrickTree {
-    pub fn new(size: glam::UVec3) -> Self {
-        let size = size.map(|x| x.next_power_of_two());
-        let bricks = size.map(|x| x >> 3);
-        let shift = size.map(|x| x.ilog2() - 3);
-
+#[derive(Clone)]
+struct IndexChunk {
+    base_addr: [u32; 64],
+    mask: u64,
+}
+impl Default for IndexChunk {
+    fn default() -> Self {
         Self {
-            size,
-            shift,
-            bricks,
-            index: Box::new([0; 512]),
-            voxels: Vec::new(),
+            base_addr: [0; 64],
+            mask: 0,
         }
+    }
+}
+
+struct DataChunk {
+    data: [u8; 64],
+}
+impl Default for DataChunk {
+    fn default() -> Self {
+        Self { data: [0; 64] }
+    }
+}
+
+fn root_index(bounds: glam::UVec3, pos: glam::UVec3) -> u32 {
+    (pos.x >> 4) * bounds.y * bounds.z + (pos.y >> 4) * bounds.z + (pos.z >> 4)
+}
+fn brick_index(pos: glam::UVec3) -> u32 {
+    ((pos.x >> 2) & 3) << 4 | ((pos.y >> 2) & 3) << 2 | ((pos.z >> 2) & 3)
+}
+fn base_index(pos: glam::UVec3) -> u32 {
+    (pos.x & 3) << 4 | (pos.y & 3) << 2 | pos.z & 3
+}
+
+impl BrickMap {
+    // pub const fn bitmask_lut() -> [u64; 64 * 8] {
+    //     // for ray_dir in 0..8 {
+    //     //     let dir = glam::
+    //     // }
+    // }
+    //
+
+    pub fn new(size: glam::UVec3) -> Self {
+        let index_bounds = size.map(|x| (x + 15) >> 4);
+        Self {
+            index_bounds,
+            index: vec![IndexChunk::default(); index_bounds.element_product() as usize],
+            data: Vec::new(),
+        }
+    }
+
+    pub fn get(&self, pos: glam::UVec3) -> u8 {
+        let index_chunk = &self.index[root_index(self.index_bounds, pos) as usize];
+        let brick_index = brick_index(pos);
+        if index_chunk.mask & (1 << brick_index) == 0 {
+            return 0;
+        }
+        self.data[index_chunk.base_addr[brick_index as usize] as usize].data
+            [base_index(pos) as usize]
+    }
+
+    pub fn insert(&mut self, pos: glam::UVec3, value: u8) {
+        let index_chunk = &mut self.index[root_index(self.index_bounds, pos) as usize];
+        let brick_index = brick_index(pos);
+
+        let brick_occupied = index_chunk.mask & (1 << brick_index) != 0;
+        if !brick_occupied {
+            if value == 0 {
+                return;
+            }
+            index_chunk.base_addr[brick_index as usize] = self.data.len() as u32;
+            index_chunk.mask |= 1 << brick_index;
+            self.data.push(DataChunk::default());
+        }
+        self.data[index_chunk.base_addr[brick_index as usize] as usize].data
+            [base_index(pos) as usize] = value;
     }
 
     pub fn from_scene(scene: &crate::vox::Scene) -> Self {
@@ -87,110 +138,14 @@ impl BrickTree {
         }
 
         println!("built tree in {:#?}", timer.elapsed());
-        // println!("tree length: {} bytes", _self.nodes.len() * 4);
-        // println!("original length: {} bytes", scene.size.element_product());
+        println!(
+            "tree length: {} mb",
+            (_self.data.len() * 64 + _self.index.len() * 264) as f64 / 1000000.0
+        );
+        println!(
+            "original length: {} mb",
+            (scene.size.element_product()) as f64 / 1000000.0
+        );
         _self
-    }
-
-    pub fn get(&self, pos: glam::UVec3) -> u8 {
-        let i = self
-
-        let mut depth = self.depth as i32 - 1;
-        let mut cur = 0;
-
-        loop {
-            let [x, y, z] = [
-                (px >> depth * 2) & 3,
-                (py >> depth * 2) & 3,
-                (pz >> depth * 2) & 3,
-            ];
-            let i = x << 4 | y << 2 | z;
-            // (xyz, i) are pos and index at this depth
-
-            let node = self.nodes[(cur + i) as usize];
-            if node.is_leaf() {
-                return node.leaf_value();
-            }
-
-            cur = node.first_child();
-            depth -= 1;
-        }
-    }
-
-    pub fn insert(&mut self, position: glam::UVec3, value: u8) {
-        let [px, py, pz] = [position.x, position.y, position.z];
-
-        let mut depth = self.depth as i32 - 1;
-        let mut cur = 0;
-
-        loop {
-            let [x, y, z] = [
-                (px >> depth * 2) & 3,
-                (py >> depth * 2) & 3,
-                (pz >> depth * 2) & 3,
-            ];
-            let i = x << 4 | y << 2 | z;
-            // (xyz, i) are pos and index at this depth
-
-            let node = self.nodes[(cur + i) as usize];
-
-            if node.is_leaf() {
-                let x = node.leaf_value();
-                if x == value {
-                    // already there
-                    return;
-                }
-                if depth == 0 {
-                    // rewrite existing
-                    self.nodes[(cur + i) as usize] = (value as u32).leaf();
-                    return;
-                }
-                let first_child = self.nodes.len() as u32;
-                self.nodes.extend([node; 64]);
-                self.nodes[(cur + i) as usize] = first_child.internal();
-                cur = first_child;
-            } else {
-                cur = node.first_child();
-            }
-            depth -= 1;
-        }
-    }
-
-    fn merge_optimize(&mut self) {
-        let mut cur = self.nodes.len() as u32 - 64;
-
-        let mut merged = 0;
-
-        loop {
-            if cur == 0 {
-                break;
-            }
-            let mut equal = true;
-            let val = self.nodes[cur as usize];
-            if !val.is_leaf() {
-                cur -= 64;
-                continue;
-            }
-            for j in 1..32 {
-                if val != self.nodes[j + cur as usize] {
-                    equal = false;
-                    break;
-                }
-            }
-            if !equal {
-                cur -= 64;
-                continue;
-            }
-            merged += 1;
-            let candidate = val.internal();
-            let new = val.leaf();
-            for j in 0..cur {
-                if self.nodes[j as usize] == candidate {
-                    self.nodes[j as usize] = new;
-                }
-            }
-            cur -= 64;
-        }
-        println!("merged {} cubes", merged);
     }
 }
