@@ -4,12 +4,14 @@ use crate::renderer::tree1::PTree;
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SceneDataBuffer {
     size: [u32; 3],
-    depth: u32,
+    _pad_2: u32,
+    index_bounds: [u32; 3],
+    _pad_1: u32,
     palette: [u32; 256],
 }
 
 impl SceneDataBuffer {
-    pub fn new(scene: &crate::vox::Scene, depth: u32) -> Self {
+    pub fn new(scene: &crate::vox::Scene, index_bounds: glam::UVec3) -> Self {
         let mut palette = [0; 256];
         for (i, mat) in scene.palette.iter().enumerate() {
             let rgba = mat.rgba;
@@ -24,13 +26,15 @@ impl SceneDataBuffer {
                 scene.size.y as u32,
                 scene.size.z as u32,
             ],
-            depth,
+            _pad_1: 0,
+            index_bounds: index_bounds.to_array(),
+            _pad_2: 0,
             palette,
         }
     }
 }
 
-pub struct VoxelDataBuffer(pub Vec<u32>);
+pub struct VoxelDataBuffer(pub Vec<u8>);
 
 impl VoxelDataBuffer {
     pub fn new(scene: &crate::vox::Scene) -> Self {
@@ -39,12 +43,12 @@ impl VoxelDataBuffer {
         let x_run = scene.size.y as usize * scene.size.z as usize;
         let y_run = scene.size.z as usize;
 
-        let mut voxels = vec![0; ((scene.size.element_product() as usize) + 3) >> 2];
+        let mut voxels = vec![0; scene.size.element_product() as usize];
         for instance in scene.instances() {
             for (pos, palette_index) in instance.voxels() {
                 let pos = (pos - scene.base).as_usizevec3();
                 let index = pos.x * x_run + pos.y * y_run + pos.z;
-                voxels[index >> 2] |= (palette_index as u32) << 8 * (index & 3);
+                voxels[index] = palette_index;
             }
         }
 

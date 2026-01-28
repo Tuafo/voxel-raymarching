@@ -1,46 +1,43 @@
-pub struct BrickMap {
-    pub index_bounds: glam::UVec3,
-    pub index: Vec<IndexChunk>,
-    pub data: Vec<DataChunk>,
+pub struct TwoTree {
+    pub size: glam::UVec3,
+    pub chunks: Vec<Chunk>,
+    pub bricks: Vec<Brick>,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct IndexChunk {
-    base_addr: [u32; 64],
-    mask: u64,
+pub struct Chunk {
+    brick_index: u32,
+    mask: [u32; 16],
 }
-impl Default for IndexChunk {
+impl Default for Chunk {
     fn default() -> Self {
         Self {
-            base_addr: [0; 64],
-            mask: 0,
+            brick_index: 0,
+            mask: [0; 16],
         }
     }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct DataChunk {
-    data: [u8; 64],
+pub struct Brick {
+    data: [u8; 512],
 }
-impl Default for DataChunk {
+impl Default for Brick {
     fn default() -> Self {
-        Self { data: [0; 64] }
+        Self { data: [0; 512] }
     }
 }
 
-fn root_index(bounds: glam::UVec3, pos: glam::UVec3) -> u32 {
-    (pos.x >> 4) * bounds.y * bounds.z + (pos.y >> 4) * bounds.z + (pos.z >> 4)
+fn chunk_index(size: glam::UVec3, pos: glam::UVec3) -> u32 {
+    (pos.x >> 3) * size.y * size.z + (pos.y >> 3) * size.z + (pos.z >> 3)
 }
-fn brick_index(pos: glam::UVec3) -> u32 {
-    ((pos.x >> 2) & 3) << 4 | ((pos.y >> 2) & 3) << 2 | ((pos.z >> 2) & 3)
-}
-fn base_index(pos: glam::UVec3) -> u32 {
-    (pos.x & 3) << 4 | (pos.y & 3) << 2 | pos.z & 3
+fn voxel_index(pos: glam::UVec3) -> u32 {
+    (pos.x & 7) << 6 | (pos.y & 7) << 3 | (pos.z & 7)
 }
 
-impl BrickMap {
+impl TwoTree {
     // pub const fn bitmask_lut() -> [u64; 64 * 8] {
     //     // for ray_dir in 0..8 {
     //     //     let dir = glam::
@@ -49,39 +46,44 @@ impl BrickMap {
     //
 
     pub fn new(size: glam::UVec3) -> Self {
-        let index_bounds = size.map(|x| (x + 15) >> 4);
+        let size = size.map(|x| (x + 7) >> 3);
         Self {
-            index_bounds,
-            index: vec![IndexChunk::default(); index_bounds.element_product() as usize],
-            data: Vec::new(),
+            size,
+            chunks: vec![Chunk::default(); size.element_product() as usize],
+            bricks: Vec::new(),
         }
     }
 
     pub fn get(&self, pos: glam::UVec3) -> u8 {
-        let index_chunk = &self.index[root_index(self.index_bounds, pos) as usize];
-        let brick_index = brick_index(pos);
-        if index_chunk.mask & (1 << brick_index) == 0 {
+        let chunk = &self.chunks[chunk_index(self.size, pos) as usize];
+        let voxel_index = voxel_index(pos);
+
+        if chunk.mask[(voxel_index >> 5) as usize] & (1 << (voxel_index & 31)) == 0 {
             return 0;
         }
-        self.data[index_chunk.base_addr[brick_index as usize] as usize].data
-            [base_index(pos) as usize]
+        self.bricks[chunk.brick_index as usize - 1].data[voxel_index as usize]
     }
 
     pub fn insert(&mut self, pos: glam::UVec3, value: u8) {
-        let index_chunk = &mut self.index[root_index(self.index_bounds, pos) as usize];
-        let brick_index = brick_index(pos);
+        let chunk = &mut self.chunks[chunk_index(self.size, pos) as usize];
+        let voxel_index = voxel_index(pos);
 
-        let brick_occupied = index_chunk.mask & (1 << brick_index) != 0;
-        if !brick_occupied {
+        if value == 0 {
+            chunk.mask[(voxel_index >> 5) as usize] &= !(1 << (voxel_index & 31));
+        } else {
+            chunk.mask[(voxel_index >> 5) as usize] |= 1 << (voxel_index & 31);
+        }
+
+        if chunk.brick_index == 0 {
+            // allocate new brick
+
             if value == 0 {
                 return;
             }
-            index_chunk.base_addr[brick_index as usize] = self.data.len() as u32;
-            index_chunk.mask |= 1 << brick_index;
-            self.data.push(DataChunk::default());
+            chunk.brick_index = self.bricks.len() as u32 + 1;
+            self.bricks.push(Brick::default());
         }
-        self.data[index_chunk.base_addr[brick_index as usize] as usize].data
-            [base_index(pos) as usize] = value;
+        self.bricks[chunk.brick_index as usize - 1].data[voxel_index as usize] = value;
     }
 
     pub fn from_scene(scene: &crate::vox::Scene) -> Self {
@@ -143,7 +145,7 @@ impl BrickMap {
         println!("built tree in {:#?}", timer.elapsed());
         println!(
             "tree length: {} mb",
-            (_self.data.len() * 64 + _self.index.len() * 264) as f64 / 1000000.0
+            (_self.chunks.len() * 68 + _self.bricks.len() * 512) as f64 / 1000000.0
         );
         println!(
             "original length: {} mb",

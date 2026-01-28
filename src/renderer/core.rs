@@ -13,6 +13,7 @@ use crate::{
     renderer::{
         brick_tree::BrickMap,
         buffers::{CameraDataBuffer, ModelDataBuffer, SceneDataBuffer, VoxelDataBuffer},
+        nested_tree::TwoTree,
         quad::Quad,
         tree1::PTree,
     },
@@ -48,8 +49,10 @@ pub struct Renderer {
 
 struct Uniforms {
     scene: Buffer,
-    scene_data: SceneDataBuffer,
-    voxels: Buffer,
+    voxel_index: Buffer,
+    voxel_data: Buffer,
+    // scene_data: SceneDataBuffer,
+    // voxels: Buffer,
     // voxels_data: VoxelDataBuffer,
     camera: Buffer,
     camera_data: CameraDataBuffer,
@@ -83,17 +86,40 @@ impl Renderer {
         let textures = Textures { color: None };
 
         let uniforms = {
-            let voxels_data = VoxelDataBuffer::new(&engine.scene);
-            BrickMap::from_scene(&engine.scene);
+            // let voxels_data = VoxelDataBuffer::new(&engine.scene);
             // let voxels_tree = PTree::from_scene(&engine.scene);
-            let voxels = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("voxel data storage buffer"),
-                // contents: bytemuck::cast_slice(&voxels_tree.nodes),
-                contents: bytemuck::cast_slice(&voxels_data.0),
+            // let voxels = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            //     label: Some("voxel data storage buffer"),
+            //     // contents: bytemuck::cast_slice(&voxels_tree.nodes),
+            //     contents: bytemuck::cast_slice(&voxels_data.0),
+            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            // });
+
+            // let voxels = BrickMap::from_scene(&engine.scene);
+            // let voxel_index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            //     label: Some("voxel index storage buffer"),
+            //     contents: bytemuck::cast_slice(&voxels.index),
+            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            // });
+            // let voxel_data = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            //     label: Some("voxel data storage buffer"),
+            //     contents: bytemuck::cast_slice(&voxels.data),
+            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            // });
+
+            let voxels = TwoTree::from_scene(&engine.scene);
+            let voxel_index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("voxel chunks storage buffer"),
+                contents: bytemuck::cast_slice(&voxels.chunks),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            let voxel_data = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("voxel bricks storage buffer"),
+                contents: bytemuck::cast_slice(&voxels.bricks),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
-            let scene_data = SceneDataBuffer::new(&engine.scene, 1);
+            let scene_data = SceneDataBuffer::new(&engine.scene, voxels.size);
             let scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("scene data uniform buffer"),
                 contents: bytemuck::cast_slice(&[scene_data]),
@@ -116,9 +142,8 @@ impl Renderer {
 
             Uniforms {
                 scene,
-                scene_data,
-                voxels,
-                // voxels_data,
+                voxel_index,
+                voxel_data,
                 camera,
                 camera_data,
                 model,
@@ -290,7 +315,11 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.uniforms.voxels.as_entire_binding(),
+                    resource: self.uniforms.voxel_index.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.uniforms.voxel_data.as_entire_binding(),
                 },
             ],
         });
