@@ -1,4 +1,4 @@
-pub struct TwoTree {
+pub struct VoxelTree {
     pub size: glam::UVec3,
     pub chunk_indices: Vec<u32>,
     pub chunks: Vec<Chunk>,
@@ -38,7 +38,7 @@ fn voxel_index(pos: glam::UVec3) -> u32 {
     (pos.x & 7) << 6 | (pos.y & 7) << 3 | (pos.z & 7)
 }
 
-impl TwoTree {
+impl VoxelTree {
     // pub const fn bitmask_lut() -> [u64; 64 * 8] {
     //     // for ray_dir in 0..8 {
     //     //     let dir = glam::
@@ -103,7 +103,7 @@ impl TwoTree {
         self.bricks[chunk.brick_index as usize - 1].data[voxel_index as usize] = value;
     }
 
-    pub fn from_scene(scene: &crate::vox::Scene) -> Self {
+    pub fn from_scene(scene: &crate::Scene) -> Self {
         let timer = std::time::Instant::now();
         let mut _self = Self::new(scene.size.as_uvec3());
 
@@ -134,7 +134,7 @@ impl TwoTree {
         _self
     }
 
-    pub fn d_from_scene(scene: &crate::vox::Scene) -> Self {
+    pub fn d_from_scene(scene: &crate::Scene) -> Self {
         let timer = std::time::Instant::now();
 
         let x_run = scene.size.y as usize * scene.size.z as usize;

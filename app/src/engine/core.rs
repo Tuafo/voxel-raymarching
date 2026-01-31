@@ -6,8 +6,8 @@ use crate::{
     SizedWindow,
     engine::{camera::Camera, input::Input, model::Model},
     ui::Ui,
-    vox::Scene,
 };
+use vox::Scene;
 
 pub struct Engine {
     pub input: Input,

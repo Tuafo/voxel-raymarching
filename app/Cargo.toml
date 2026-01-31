@@ -1,0 +1,17 @@
+[package]
+name = "wgpu-hello-cube"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vox = { path = "../vox" }
+anyhow = "1.0.100"
+bytemuck = { version = "1.24.0", features = ["derive"] }
+egui = "0.33.3"
+egui-wgpu = { version = "0.33.3", features = ["winit"] }
+egui-winit = "0.33.3"
+env_logger = "0.11.8"
+glam = "0.30.10"
+pollster = "0.4.0"
+wgpu = "27.0.1"
+winit = "0.30.12"

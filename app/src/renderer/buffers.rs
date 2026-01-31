@@ -1,5 +1,3 @@
-use crate::renderer::tree1::PTree;
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SceneDataBuffer {
@@ -11,7 +9,7 @@ pub struct SceneDataBuffer {
 }
 
 impl SceneDataBuffer {
-    pub fn new(scene: &crate::vox::Scene, index_bounds: glam::UVec3) -> Self {
+    pub fn new(scene: &vox::Scene, index_bounds: glam::UVec3) -> Self {
         let mut palette = [0; 256];
         for (i, mat) in scene.palette.iter().enumerate() {
             let rgba = mat.rgba;
@@ -34,82 +32,82 @@ impl SceneDataBuffer {
     }
 }
 
-pub struct VoxelDataBuffer(pub Vec<u8>);
+// pub struct VoxelDataBuffer(pub Vec<u8>);
 
-impl VoxelDataBuffer {
-    pub fn new(scene: &crate::vox::Scene) -> Self {
-        let timer = std::time::Instant::now();
+// impl VoxelDataBuffer {
+//     pub fn new(scene: &vox::Scene) -> Self {
+//         let timer = std::time::Instant::now();
 
-        let x_run = scene.size.y as usize * scene.size.z as usize;
-        let y_run = scene.size.z as usize;
+//         let x_run = scene.size.y as usize * scene.size.z as usize;
+//         let y_run = scene.size.z as usize;
 
-        let mut voxels = vec![0; scene.size.element_product() as usize];
-        for instance in scene.instances() {
-            for (pos, palette_index) in instance.voxels() {
-                let pos = (pos - scene.base).as_usizevec3();
-                let index = pos.x * x_run + pos.y * y_run + pos.z;
-                voxels[index] = palette_index;
-            }
-        }
+//         let mut voxels = vec![0; scene.size.element_product() as usize];
+//         for instance in scene.instances() {
+//             for (pos, palette_index) in instance.voxels() {
+//                 let pos = (pos - scene.base).as_usizevec3();
+//                 let index = pos.x * x_run + pos.y * y_run + pos.z;
+//                 voxels[index] = palette_index;
+//             }
+//         }
 
-        println!("voxel data load took {:#?}", timer.elapsed());
-        Self(voxels)
-    }
+//         println!("voxel data load took {:#?}", timer.elapsed());
+//         Self(voxels)
+//     }
 
-    pub fn build_tree(scene: &crate::vox::Scene) {
-        let timer = std::time::Instant::now();
+//     pub fn build_tree(scene: &vox::Scene) {
+//         let timer = std::time::Instant::now();
 
-        let x_run = scene.size.y as usize * scene.size.z as usize;
-        let y_run = scene.size.z as usize;
+//         let x_run = scene.size.y as usize * scene.size.z as usize;
+//         let y_run = scene.size.z as usize;
 
-        let mut voxels = vec![0; scene.size.element_product() as usize];
-        for instance in scene.instances() {
-            for (pos, palette_index) in instance.voxels() {
-                let pos = (pos - scene.base).as_usizevec3();
-                let index = pos.x * x_run + pos.y * y_run + pos.z;
-                voxels[index] = palette_index;
-            }
-        }
+//         let mut voxels = vec![0; scene.size.element_product() as usize];
+//         for instance in scene.instances() {
+//             for (pos, palette_index) in instance.voxels() {
+//                 let pos = (pos - scene.base).as_usizevec3();
+//                 let index = pos.x * x_run + pos.y * y_run + pos.z;
+//                 voxels[index] = palette_index;
+//             }
+//         }
 
-        // let mut tree = Tree::new(scene.size.as_uvec3());
-        let mut tree = PTree::new(scene.size.as_uvec3());
+//         // let mut tree = Tree::new(scene.size.as_uvec3());
+//         let mut tree = PTree::new(scene.size.as_uvec3());
 
-        for x in 0..scene.size.x {
-            for y in 0..scene.size.y {
-                for z in 0..scene.size.z {
-                    let pos = glam::ivec3(x, y, z).as_uvec3();
-                    let index = pos.x as usize * x_run + pos.y as usize * y_run + pos.z as usize;
-                    let voxel = voxels[index];
-                    tree.insert(pos, voxel);
-                }
-            }
-        }
-        let mut errors = 0;
-        for x in 0..scene.size.x {
-            for y in 0..scene.size.y {
-                for z in 0..scene.size.z {
-                    let pos = glam::ivec3(x, y, z).as_uvec3();
-                    let index = pos.x as usize * x_run + pos.y as usize * y_run + pos.z as usize;
-                    let voxel = voxels[index];
-                    // assert_eq!(voxel, tree.get(pos));
-                    let tval = tree.get(pos);
-                    if tval != voxel {
-                        println!(
-                            "pos {} failed. actual: {}, tree: {}",
-                            pos,
-                            voxel,
-                            tree.get(pos)
-                        );
-                        errors += 1;
-                    }
-                }
-            }
-        }
-        println!("finished with {} errors", errors);
+//         for x in 0..scene.size.x {
+//             for y in 0..scene.size.y {
+//                 for z in 0..scene.size.z {
+//                     let pos = glam::ivec3(x, y, z).as_uvec3();
+//                     let index = pos.x as usize * x_run + pos.y as usize * y_run + pos.z as usize;
+//                     let voxel = voxels[index];
+//                     tree.insert(pos, voxel);
+//                 }
+//             }
+//         }
+//         let mut errors = 0;
+//         for x in 0..scene.size.x {
+//             for y in 0..scene.size.y {
+//                 for z in 0..scene.size.z {
+//                     let pos = glam::ivec3(x, y, z).as_uvec3();
+//                     let index = pos.x as usize * x_run + pos.y as usize * y_run + pos.z as usize;
+//                     let voxel = voxels[index];
+//                     // assert_eq!(voxel, tree.get(pos));
+//                     let tval = tree.get(pos);
+//                     if tval != voxel {
+//                         println!(
+//                             "pos {} failed. actual: {}, tree: {}",
+//                             pos,
+//                             voxel,
+//                             tree.get(pos)
+//                         );
+//                         errors += 1;
+//                     }
+//                 }
+//             }
+//         }
+//         println!("finished with {} errors", errors);
 
-        println!("built tree in {:#?}", timer.elapsed());
-    }
-}
+//         println!("built tree in {:#?}", timer.elapsed());
+//     }
+// }
 
 // type TreeKey = u32;
 
@@ -186,7 +184,13 @@ pub struct CameraDataBuffer {
     pub view_proj: [[f32; 4]; 4],
     pub inv_view_proj: [[f32; 4]; 4],
     pub ws_position: [f32; 3],
-    pub _pad: f32,
+    pub _pad_0: f32,
+    pub forward: [f32; 3],
+    pub near: f32,
+    pub far: f32,
+    pub fov: f32,
+    pub _pad_1: f32,
+    pub _pad_2: f32,
 }
 
 impl CameraDataBuffer {
@@ -194,6 +198,10 @@ impl CameraDataBuffer {
         self.view_proj = camera.view_proj.as_mat4().to_cols_array_2d();
         self.inv_view_proj = camera.inv_view_proj.as_mat4().to_cols_array_2d();
         self.ws_position = camera.position.as_vec3().to_array();
+        self.forward = camera.forward.as_vec3().to_array();
+        self.near = camera.near as f32;
+        self.far = camera.far as f32;
+        self.fov = camera.fov as f32;
     }
 }
 

@@ -3,7 +3,7 @@ use std::time::Instant;
 use glam::{IVec3, Vec3, usizevec3};
 use wgpu::{Buffer, util::DeviceExt};
 
-use crate::vox::Scene;
+use vox::Scene;
 
 pub trait IntoMesh {
     fn mesh(&mut self, device: &wgpu::Device) -> Mesh;

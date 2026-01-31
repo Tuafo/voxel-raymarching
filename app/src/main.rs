@@ -1,7 +1,6 @@
 mod engine;
 mod renderer;
 mod ui;
-mod vox;
 
 use std::{sync::Arc, time::Instant};
 
@@ -22,7 +21,9 @@ struct Program {
 
 impl ApplicationHandler for Program {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let cfg = Window::default_attributes().with_title("wgpu demo");
+        let cfg = Window::default_attributes()
+            .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))
+            .with_title("wgpu demo");
 
         let window = event_loop.create_window(cfg).unwrap();
         let window = Arc::new(window);

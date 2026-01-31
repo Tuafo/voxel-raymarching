@@ -12,11 +12,11 @@ use crate::{
     engine::Engine,
     renderer::{
         buffers::{CameraDataBuffer, ModelDataBuffer, SceneDataBuffer},
-        nested_tree::TwoTree,
         quad::Quad,
     },
     ui::{Ui, UiCtx},
 };
+use vox::tree::VoxelTree;
 
 pub struct RendererCtx<'a> {
     pub window: &'a winit::window::Window,
@@ -58,11 +58,13 @@ struct Uniforms {
 
 struct Pipelines {
     raymarch: ComputePipeline,
+    normal_blur: ComputePipeline,
     post_fx: RenderPipeline,
 }
 
 struct BindGroups {
     raymarch: Option<BindGroup>,
+    normal_blur: Option<BindGroup>,
     post_fx: Option<BindGroup>,
     camera: BindGroup,
     model: BindGroup,
@@ -70,6 +72,8 @@ struct BindGroups {
 
 struct Textures {
     color: Option<Texture>,
+    normal: Option<Texture>,
+    post_normal: Option<Texture>,
 }
 
 impl Renderer {
@@ -79,7 +83,11 @@ impl Renderer {
         format: wgpu::TextureFormat,
         engine: &Engine,
     ) -> Self {
-        let textures = Textures { color: None };
+        let textures = Textures {
+            color: None,
+            normal: None,
+            post_normal: None,
+        };
 
         let uniforms = {
             // let voxels_data = VoxelDataBuffer::new(&engine.scene);
@@ -103,7 +111,7 @@ impl Renderer {
             //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             // });
 
-            let voxels = TwoTree::from_scene(&engine.scene);
+            let voxels = VoxelTree::from_scene(&engine.scene);
             let voxel_chunk_index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel chunk indices storage buffer"),
                 contents: bytemuck::cast_slice(&voxels.chunk_indices),
@@ -158,7 +166,7 @@ impl Renderer {
                 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("raymarch shader"),
                     source: wgpu::ShaderSource::Wgsl(
-                        std::include_str!("../shaders/main.wgsl").into(),
+                        std::include_str!("../shaders/raymarch.wgsl").into(),
                     ),
                 });
 
@@ -172,9 +180,27 @@ impl Renderer {
                 })
             };
 
+            let normal_blur = {
+                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("normal blur shader"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        std::include_str!("../shaders/normal_blur.wgsl").into(),
+                    ),
+                });
+
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("normal blur pipeline"),
+                    layout: None,
+                    module: &shader,
+                    entry_point: Some("compute_main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+            };
+
             let post_fx = {
                 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("main shader"),
+                    label: Some("post processing shader"),
                     source: wgpu::ShaderSource::Wgsl(
                         std::include_str!("../shaders/fx.wgsl").into(),
                     ),
@@ -211,7 +237,11 @@ impl Renderer {
                 })
             };
 
-            Pipelines { raymarch, post_fx }
+            Pipelines {
+                raymarch,
+                normal_blur,
+                post_fx,
+            }
         };
 
         let bind_groups = {
@@ -236,6 +266,7 @@ impl Renderer {
             BindGroups {
                 raymarch: None,
                 post_fx: None,
+                normal_blur: None,
                 camera,
                 model,
             }
@@ -287,8 +318,50 @@ impl Renderer {
             label: Some("raymarch out texture storage view"),
             ..Default::default()
         });
-        let sampler_color = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("color sampler"),
+        self.textures.color = Some(tex_color);
+
+        let tex_normal = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("normal texture"),
+            size: wgpu::Extent3d {
+                width: size.x,
+                height: size.y,
+                depth_or_array_layers: 1,
+            },
+            sample_count: 1,
+            format: wgpu::TextureFormat::Rgba8Snorm,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            mip_level_count: 1,
+            view_formats: &[],
+        });
+        let view_normal = tex_normal.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("normal texture storage view"),
+            ..Default::default()
+        });
+        self.textures.normal = Some(tex_normal);
+
+        let tex_post_normal = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("post-blur normal texture"),
+            size: wgpu::Extent3d {
+                width: size.x,
+                height: size.y,
+                depth_or_array_layers: 1,
+            },
+            sample_count: 1,
+            format: wgpu::TextureFormat::Rgba8Snorm,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            mip_level_count: 1,
+            view_formats: &[],
+        });
+        let view_post_normal = tex_post_normal.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("post-blur normal texture view"),
+            ..Default::default()
+        });
+        self.textures.post_normal = Some(tex_post_normal);
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("g-buffer sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -301,7 +374,6 @@ impl Renderer {
             anisotropy_clamp: 1,
             border_color: None,
         });
-        self.textures.color = Some(tex_color);
 
         let bg_raymarch = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("raymarch bind group"),
@@ -313,23 +385,47 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.uniforms.scene.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&view_normal),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.uniforms.voxel_chunk_index.as_entire_binding(),
+                    resource: self.uniforms.scene.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.uniforms.voxel_chunks.as_entire_binding(),
+                    resource: self.uniforms.voxel_chunk_index.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
+                    resource: self.uniforms.voxel_chunks.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
                     resource: self.uniforms.voxel_bricks.as_entire_binding(),
                 },
             ],
         });
         self.bind_groups.raymarch = Some(bg_raymarch);
+
+        let bg_normal_blur = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("normal blur bind group"),
+            layout: &self.pipelines.normal_blur.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view_post_normal),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view_normal),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        self.bind_groups.normal_blur = Some(bg_normal_blur);
 
         let bg_post_fx = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post fx bind group"),
@@ -341,7 +437,11 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler_color),
+                    resource: wgpu::BindingResource::TextureView(&view_post_normal),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
         });
@@ -399,6 +499,23 @@ impl Renderer {
             pass.pop_debug_group();
 
             pass.insert_debug_marker("raymarch");
+            pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
+        }
+
+        // normal blur pass
+        {
+            let descriptor = wgpu::ComputePassDescriptor {
+                label: Some("normal blur"),
+                timestamp_writes: None,
+            };
+            let mut pass = encoder.begin_compute_pass(&descriptor);
+
+            pass.push_debug_group("prepare normal blur data");
+            pass.set_pipeline(&self.pipelines.normal_blur);
+            pass.set_bind_group(0, &self.bind_groups.normal_blur, &[]);
+            pass.pop_debug_group();
+
+            pass.insert_debug_marker("normal blur");
             pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
         }
 

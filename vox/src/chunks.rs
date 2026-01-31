@@ -7,8 +7,8 @@ use std::{
 
 use glam::{IVec3, IVec4, Mat4, Vec4};
 
-use crate::vox::scene::ModelID;
-use crate::vox::{
+use crate::scene::ModelID;
+use crate::{
     extensions::{PropertiesExt, ReadExt},
     scene::MaterialSurface,
 };

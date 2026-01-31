@@ -9,8 +9,8 @@ use std::{
 
 use glam::{IVec3, Mat4, U8Vec3, Vec4Swizzles, ivec3, ivec4, vec4};
 
-use crate::vox::chunks::{Chunk, GroupChunk, ShapeChunk, SizeChunk, TransformChunk, VoxelChunk};
-use crate::vox::extensions::ReadExt;
+use crate::chunks::{Chunk, GroupChunk, ShapeChunk, SizeChunk, TransformChunk, VoxelChunk};
+use crate::extensions::ReadExt;
 
 #[derive(Debug)]
 pub struct Scene {

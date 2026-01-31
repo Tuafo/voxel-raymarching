@@ -1,0 +1,8 @@
+[package]
+name = "vox"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+glam = "0.30.10"
+bytemuck = { version = "1.24.0", features = ["derive"] }

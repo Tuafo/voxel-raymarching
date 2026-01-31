@@ -29,7 +29,7 @@ impl Camera {
             position: glam::dvec3(8.0, 14.0, 3.0),
             velocity: glam::DVec3::ZERO,
             rotation: glam::dvec3(0.0, 0.0, 0.0),
-            fov: 45.0,
+            fov: 90.0 * (PI / 180.0),
             near: 0.01,
             far: 100.0,
             size,
@@ -48,6 +48,9 @@ impl Camera {
         )
         .as_dvec2();
         in_vec /= in_vec.length().max(1.0);
+        // if in_vec.y.abs() < 0.001 {
+        //     in_vec.y = 0.1;
+        // }
 
         if cursor_locked {
             const MOUSE_SENSITIVITY: f64 = 0.001;
