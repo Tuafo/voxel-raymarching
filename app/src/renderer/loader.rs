@@ -33,6 +33,7 @@ struct Node {
 
 #[derive(Debug)]
 struct Mesh {
+    primitive_buffer: wgpu::Buffer,
     primitives: Vec<Primitive>,
 }
 
@@ -43,6 +44,7 @@ struct Primitive {
     index_count: u32,
     vertex_buffer: wgpu::Buffer,
     normal_buffer: wgpu::Buffer,
+    material_id: u32,
 }
 
 #[repr(C)]
@@ -60,6 +62,12 @@ impl Default for ModelDataBuffer {
             _pad: [0.0; 36],
         }
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PrimitiveDataBuffer {
+    pub material_id: u32,
 }
 
 impl ModelLoader {
@@ -84,12 +92,12 @@ impl ModelLoader {
                 .get(gltf.meta.scene.context("no default scene")? as usize)
                 .context("unable to find default scene")?;
 
-            let mut mesh_id_map = HashMap::new();
             let mut visit_queue = VecDeque::new();
             for node in &scene.nodes {
                 visit_queue.push_back((*node, models::GLTF_Y_UP_TO_Z_UP));
             }
 
+            let mut mesh_id_map = HashMap::new();
             // visit breadth first over the scene, flattening the matrix transform
             while let Some((node_id, parent_matrix)) = visit_queue.pop_front() {
                 let node = gltf
@@ -134,6 +142,9 @@ impl ModelLoader {
                             if p.mode != models::schema::DrawMode::Triangles {
                                 return None;
                             }
+                            let Some(material_id) = p.material else {
+                                return None;
+                            };
 
                             // p.indices is None if there's no index buffer and it's direct vertex list
                             // ignore that case for now
@@ -275,11 +286,30 @@ impl ModelLoader {
                                 index_count,
                                 vertex_buffer,
                                 normal_buffer,
+                                material_id,
                             })
                         })
                         .collect::<Vec<Primitive>>();
+
+                    let primitive_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("primitive data"),
+                            contents: bytemuck::cast_slice(
+                                &primitives
+                                    .iter()
+                                    .map(|n| PrimitiveDataBuffer {
+                                        material_id: n.material_id,
+                                    })
+                                    .collect::<Vec<PrimitiveDataBuffer>>(),
+                            ),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+
                     mesh_id_map.insert(gltf_mesh_id, meshes.len());
-                    meshes.push(Mesh { primitives });
+                    meshes.push(Mesh {
+                        primitives,
+                        primitive_buffer,
+                    });
                 }
             }
 
@@ -352,6 +382,15 @@ impl ModelLoader {
                                 format: wgpu::VertexFormat::Float32x3,
                                 offset: 0,
                                 shader_location: 1,
+                            }],
+                        },
+                        wgpu::VertexBufferLayout {
+                            array_stride: 4,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &[wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 0,
+                                shader_location: 2,
                             }],
                         },
                     ],
@@ -484,11 +523,12 @@ impl ModelLoader {
                     continue;
                 };
                 pass.set_bind_group(1, &self.bg_model, &[256 * i as u32]);
-                for primitive in &mesh.primitives {
+                pass.set_vertex_buffer(2, mesh.primitive_buffer.slice(..));
+                for (j, primitive) in mesh.primitives.iter().enumerate() {
                     pass.set_index_buffer(primitive.index_buffer.slice(..), primitive.index_format);
                     pass.set_vertex_buffer(0, primitive.vertex_buffer.slice(..));
                     pass.set_vertex_buffer(1, primitive.normal_buffer.slice(..));
-                    pass.draw_indexed(0..primitive.index_count, 0, 0..1);
+                    pass.draw_indexed(0..primitive.index_count, 0, (j as u32)..(j as u32 + 1));
                 }
             }
         }

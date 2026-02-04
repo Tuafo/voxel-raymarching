@@ -24,25 +24,45 @@ pub struct GltfJson {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<Node>,
 
-    /// An array of accessors.  An accessor is a typed view into a bufferView.
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub accessors: Vec<Accessor>,
-
     /// An array of meshes.  A mesh is a set of primitives to be rendered.
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub meshes: Vec<Mesh>,
 
-    /// An array of buffers.  A buffer points to binary geometry, animation, or skins.
+    /// An array of materials.  A material defines the appearance of a primitive.
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub buffers: Vec<Buffer>,
+    pub materials: Vec<Material>,
+
+    /// An array of images.  An image defines data used to create a texture.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<Image>,
+
+    /// An array of samplers.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub samplers: Vec<Sampler>,
+
+    /// An array of textures.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub textures: Vec<Texture>,
+
+    /// An array of accessors.  An accessor is a typed view into a bufferView.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accessors: Vec<Accessor>,
 
     /// An array of bufferViews.  A bufferView is a view into a buffer generally representing a subset of the buffer.
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub buffer_views: Vec<BufferView>,
+
+    /// An array of buffers.  A buffer points to binary geometry, animation, or skins.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub buffers: Vec<Buffer>,
 }
 
 /// Metadata about the glTF asset.
@@ -489,4 +509,384 @@ impl<'de> Deserialize<'de> for BufferType {
     {
         Ok(u32::deserialize(deserializer)?.into())
     }
+}
+
+/// The material appearance of a primitive.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Material {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// A set of parameter values that are used to define the metallic-roughness material model from Physically Based Rendering (PBR) methodology. When undefined, all the default values of `pbrMetallicRoughness` **MUST** apply.
+    pub pbr_metallic_roughness: Option<PbrMetallicRoughness>,
+
+    /// The tangent space normal texture. The texture encodes RGB components with linear transfer function. Each texel represents the XYZ components of a normal vector in tangent space. The normal vectors use the convention +X is right and +Y is up. +Z points toward the viewer. If a fourth component (A) is present, it **MUST** be ignored. When undefined, the material does not have a tangent space normal texture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normal_texture: Option<NormalTextureInfo>,
+
+    /// The occlusion texture. The occlusion values are linearly sampled from the R channel. Higher values indicate areas that receive full indirect lighting and lower values indicate no indirect lighting. If other channels are present (GBA), they **MUST** be ignored for occlusion calculations. When undefined, the material does not have an occlusion texture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occlusion_texture: Option<OcclusionTextureInfo>,
+
+    /// The emissive texture. It controls the color and intensity of the light being emitted by the material. This texture contains RGB components encoded with the sRGB transfer function. If a fourth component (A) is present, it **MUST** be ignored. When undefined, the texture **MUST** be sampled as having `1.0` in RGB components.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emissive_texture: Option<TextureInfo>,
+
+    /// The factors for the emissive color of the material. This value defines linear multipliers for the sampled texels of the emissive texture.
+    #[serde(default = "default_vec3_zero")]
+    pub emissive_factor: glam::Vec3,
+
+    /// The material's alpha rendering mode enumeration specifying the interpretation of the alpha value of the base color.
+    #[serde(default)]
+    pub alpha_mode: Option<AlphaMode>,
+
+    /// Specifies the cutoff threshold when in `MASK` alpha mode. If the alpha value is greater than or equal to this value then it is rendered as fully opaque, otherwise, it is rendered as fully transparent. A value greater than `1.0` will render the entire material as fully transparent. This value **MUST** be ignored for other alpha modes. When `alphaMode` is not defined, this value **MUST NOT** be defined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpha_cutoff: Option<f32>,
+
+    /// Specifies whether the material is double sided. When this value is false, back-face culling is enabled. When this value is true, back-face culling is disabled and double-sided lighting is enabled. The back-face **MUST** have its normals reversed before the lighting equation is evaluated.
+    #[serde(default)]
+    pub double_sided: bool,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// A set of parameter values that are used to define the metallic-roughness material model from Physically-Based Rendering (PBR) methodology.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PbrMetallicRoughness {
+    /// The factors for the base color of the material. This value defines linear multipliers for the sampled texels of the base color texture.
+    #[serde(default = "default_vec4_one")]
+    pub base_color_factor: glam::Vec4,
+
+    /// The factor for the metalness of the material. This value defines a linear multiplier for the sampled metalness values of the metallic-roughness texture.    #[serde(default = "default_scalar_factor")]
+    #[serde(default = "default_scalar_one")]
+    pub metallic_factor: f32,
+
+    /// The factor for the roughness of the material. This value defines a linear multiplier for the sampled roughness values of the metallic-roughness texture.    #[serde(default = "default_scalar_factor")]
+    #[serde(default = "default_scalar_one")]
+    pub roughness_factor: f32,
+
+    /// The base color texture. The first three components (RGB) **MUST** be encoded with the sRGB transfer function. They specify the base color of the material. If the fourth component (A) is present, it represents the linear alpha coverage of the material. Otherwise, the alpha coverage is equal to `1.0`. The `material.alphaMode` property specifies how alpha is interpreted. The stored texels **MUST NOT** be premultiplied. When undefined, the texture **MUST** be sampled as having `1.0` in all components.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_color_texture: Option<TextureInfo>,
+
+    /// The metallic-roughness texture. The metalness values are sampled from the B channel. The roughness values are sampled from the G channel. These values **MUST** be encoded with a linear transfer function. If other channels are present (R or A), they **MUST** be ignored for metallic-roughness calculations. When undefined, the texture **MUST** be sampled as having `1.0` in G and B components.    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metallic_roughness_texture: Option<TextureInfo>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum AlphaMode {
+    Opaque,
+    Mask,
+    Blend,
+    Other(String),
+}
+impl Default for AlphaMode {
+    fn default() -> Self {
+        Self::Opaque
+    }
+}
+impl Serialize for AlphaMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Opaque => "OPAQUE",
+            Self::Mask => "MASK",
+            Self::Blend => "BLEND",
+            Self::Other(v) => v,
+        })
+    }
+}
+impl<'de> Deserialize<'de> for AlphaMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "OPAQUE" => Self::Opaque,
+            "MASK" => Self::Mask,
+            "BLEND" => Self::Blend,
+            _ => Self::Other(value),
+        })
+    }
+}
+
+/// A texture and its sampler.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Texture {
+    /// The index of the sampler used by this texture. When undefined, a sampler with repeat wrapping and auto filtering **SHOULD** be used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampler: Option<u32>,
+
+    /// The index of the image used by this texture. When undefined, an extension or other mechanism **SHOULD** supply an alternate texture source, otherwise behavior is undefined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<u32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Reference to a texture.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TextureInfo {
+    /// The index of the texture.
+    pub index: u32,
+
+    /// The set index of texture's TEXCOORD attribute used for texture coordinate mapping.
+    /// This integer value is used to construct a string in the format `TEXCOORD_<set index>` which is a reference to a key in `mesh.primitives.attributes` (e.g. a value of `0` corresponds to `TEXCOORD_0`). A mesh primitive **MUST** have the corresponding texture coordinate attributes for the material to be applicable to it.
+    #[serde(default)]
+    pub tex_coord: u32,
+}
+
+/// Material Normal Texture Info
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalTextureInfo {
+    /// The index of the texture.
+    pub index: u32,
+
+    /// The set index of texture's TEXCOORD attribute used for texture coordinate mapping.
+    /// This integer value is used to construct a string in the format `TEXCOORD_<set index>` which is a reference to a key in `mesh.primitives.attributes` (e.g. a value of `0` corresponds to `TEXCOORD_0`). A mesh primitive **MUST** have the corresponding texture coordinate attributes for the material to be applicable to it.
+    #[serde(default)]
+    pub tex_coord: u32,
+
+    /// The scalar parameter applied to each normal vector of the texture. This value scales the normal vector in X and Y directions using the formula: `scaledNormal =  normalize((<sampled normal texture value> * 2.0 - 1.0) * vec3(<normal scale>, <normal scale>, 1.0))`.
+    #[serde(default = "default_scalar_one")]
+    pub scale: f32,
+}
+
+/// Material Occlusion Texture Info
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OcclusionTextureInfo {
+    /// The index of the texture.
+    pub index: u32,
+
+    /// The set index of texture's TEXCOORD attribute used for texture coordinate mapping.
+    /// This integer value is used to construct a string in the format `TEXCOORD_<set index>` which is a reference to a key in `mesh.primitives.attributes` (e.g. a value of `0` corresponds to `TEXCOORD_0`). A mesh primitive **MUST** have the corresponding texture coordinate attributes for the material to be applicable to it.
+    #[serde(default)]
+    pub tex_coord: u32,
+
+    /// A scalar parameter controlling the amount of occlusion applied. A value of `0.0` means no occlusion. A value of `1.0` means full occlusion. This value affects the final occlusion value as: `1.0 + strength * (<sampled occlusion texture value> - 1.0)`.
+    #[serde(default = "default_scalar_one")]
+    pub strength: f32,
+}
+
+/// Texture sampler properties for filtering and wrapping modes.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Sampler {
+    /// Magnification filter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mag_filter: Option<MagFilter>,
+
+    /// Minification filter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_filter: Option<MinFilter>,
+
+    /// S (U) wrapping mode.
+    #[serde(default)]
+    pub wrap_s: WrapMode,
+
+    /// T (V) wrapping mode.
+    #[serde(default)]
+    pub wrap_t: WrapMode,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum MagFilter {
+    Nearest,
+    Linear,
+    Other(u32),
+}
+impl Default for MagFilter {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+impl Serialize for MagFilter {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(match self {
+            Self::Nearest => 9728,
+            Self::Linear => 9729,
+            Self::Other(v) => *v,
+        })
+    }
+}
+impl<'de> Deserialize<'de> for MagFilter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u32::deserialize(deserializer)?;
+        Ok(match value {
+            9728 => Self::Nearest,
+            9729 => Self::Linear,
+            _ => Self::Other(value),
+        })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum MinFilter {
+    Nearest,
+    Linear,
+    NearestMipmapNearest,
+    LinearMipmapNearest,
+    NearestMipmapLinear,
+    LinearMipmapLinear,
+    Other(u32),
+}
+impl Default for MinFilter {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+impl Serialize for MinFilter {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(match self {
+            Self::Nearest => 9728,
+            Self::Linear => 9729,
+            Self::NearestMipmapNearest => 9984,
+            Self::LinearMipmapNearest => 9985,
+            Self::NearestMipmapLinear => 9986,
+            Self::LinearMipmapLinear => 9987,
+            Self::Other(v) => *v,
+        })
+    }
+}
+impl<'de> Deserialize<'de> for MinFilter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u32::deserialize(deserializer)?;
+        Ok(match value {
+            9728 => Self::Nearest,
+            9729 => Self::Linear,
+            9984 => Self::NearestMipmapNearest,
+            9985 => Self::LinearMipmapNearest,
+            9986 => Self::NearestMipmapLinear,
+            9987 => Self::LinearMipmapLinear,
+            _ => Self::Other(value),
+        })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum WrapMode {
+    ClampToEdge,
+    MirroredRepeat,
+    Repeat,
+    Other(u32),
+}
+impl Default for WrapMode {
+    fn default() -> Self {
+        Self::Repeat
+    }
+}
+impl Serialize for WrapMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(match self {
+            Self::ClampToEdge => 33071,
+            Self::MirroredRepeat => 33648,
+            Self::Repeat => 10497,
+            Self::Other(v) => *v,
+        })
+    }
+}
+impl<'de> Deserialize<'de> for WrapMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u32::deserialize(deserializer)?;
+        Ok(match value {
+            33071 => Self::ClampToEdge,
+            33648 => Self::MirroredRepeat,
+            10497 => Self::Repeat,
+            _ => Self::Other(value),
+        })
+    }
+}
+
+/// Image data used to create a texture. Image **MAY** be referenced by an URI (or IRI) or a buffer view index.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Image {
+    /// The URI (or IRI) of the image.  Relative paths are relative to the current glTF asset.  Instead of referencing an external file, this field **MAY** contain a `data:`-URI. This field **MUST NOT** be defined when `bufferView` is defined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+
+    /// The image's media type. This field **MUST** be defined when `bufferView` is defined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<MimeType>,
+
+    /// The index of the bufferView that contains the image. This field **MUST NOT** be defined when `uri` is defined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer_view: Option<u32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum MimeType {
+    Jpeg,
+    Png,
+    Other(String),
+}
+impl Serialize for MimeType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+            Self::Other(v) => v,
+        })
+    }
+}
+impl<'de> Deserialize<'de> for MimeType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "image/jpeg" => Self::Jpeg,
+            "image/png" => Self::Png,
+            _ => Self::Other(value),
+        })
+    }
+}
+
+fn default_vec4_one() -> glam::Vec4 {
+    glam::Vec4::ONE
+}
+fn default_vec3_zero() -> glam::Vec3 {
+    glam::Vec3::ZERO
+}
+fn default_scalar_one() -> f32 {
+    1.0
 }

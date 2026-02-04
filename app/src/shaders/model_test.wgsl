@@ -19,10 +19,12 @@ struct VertexOutput {
 fn vs_main(
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) material_id: u32,
 ) -> VertexOutput {
     // out.Position = camera.view_proj_matrix *  vec4(position, 1.0);
 
-    let albedo = vec3(1.0);
+    // let albedo = vec3(1.0);
+    let albedo = rand_vec3(material_id);
     let ws_normal = normalize(model.normal_matrix * normal);
 
 
@@ -40,4 +42,31 @@ fn vs_main(
 @fragment
 fn fs_main(@location(0) color: vec3<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(color, 1.0);
+}
+
+// 1. The Hash Function (PCG style)
+// Takes a seed, returns a random u32.
+fn pcg_hash(input: u32) -> u32 {
+    var state = input * 747796405u + 2891336453u;
+    var word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// 2. The Converter
+// returns vec3<f32> in range [0.0, 1.0]
+fn rand_vec3(seed: u32) -> vec3<f32> {
+    // Chain the hashes to get 3 unique numbers from 1 seed
+    let h1 = pcg_hash(seed);
+    let h2 = pcg_hash(h1);
+    let h3 = pcg_hash(h2);
+
+    // Convert u32 to f32 [0, 1]
+    // (1.0 / 4294967295.0 = 2.3283064365386963e-10)
+    let inv_max = 2.3283064365386963e-10;
+
+    return vec3<f32>(
+        f32(h1) * inv_max,
+        f32(h2) * inv_max,
+        f32(h3) * inv_max
+    );
 }
