@@ -38,15 +38,22 @@ fn vs_main(
     @location(2) uv: vec2<f32>,
     @location(3) tangent: vec4<f32>,
     @location(4) material_id: u32,
+    @location(5) ls_min: vec3<f32>,
+    @location(6) ls_max: vec3<f32>,
 ) -> VertexOutput {
     let v_color = vec3(0.0);
     let v_normal = normalize(model.normal_matrix * normal);
     let v_tangent = vec4(normalize(model.normal_matrix * tangent.xyz), tangent.w);
 
+    let ws_min = (model.matrix * vec4(ls_min, 1.0)).xyz;
+    let ws_max = (model.matrix * vec4(ls_max, 1.0)).xyz;
+    let ctr = (ws_min + ws_max) * 0.5;
+
     var out: VertexOutput;
     out.Position = camera.view_proj_matrix * model.matrix * vec4(position, 1.0);
     out.material_id = material_id;
-    out.vertex_color = v_color;
+    // out.vertex_color = v_color;
+    out.vertex_color = mix(v_color, vec3(1.0, 0.0, 0.0), length((model.matrix * vec4(position, 1.0)).xyz - ctr) * 0.05);
     out.vertex_normal = v_normal;
     out.vertex_tangent = v_tangent;
     out.uv = uv;
@@ -59,7 +66,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var albedo = in.vertex_color;
     if material.albedo_index >= 0 {
-        albedo += textureSample(textures[material.albedo_index], tex_sampler, in.uv).rgb;
+        albedo += textureSample(textures[material.albedo_index], tex_sampler, in.uv).rgb * 0.01;
     }
 
     var ws_normal = normalize(in.vertex_normal);

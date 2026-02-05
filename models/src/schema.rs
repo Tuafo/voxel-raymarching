@@ -116,13 +116,13 @@ pub struct Accessor {
 
     /// Maximum value of each component in this accessor.  Array elements **MUST** be treated as having the same data type as accessor's `componentType`. Both `min` and `max` arrays have the same length.  The length is determined by the value of the `type` property; it can be 1, 2, 3, 4, 9, or 16.\n\n`normalized` property has no effect on array values: they always correspond to the actual values stored in the buffer. When the accessor is sparse, this property **MUST** contain maximum values of accessor data with sparse substitution applied.
     #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub max: Vec<GltfNumber>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<Vec<GltfNumber>>,
 
     /// Minimum value of each component in this accessor.  Array elements **MUST** be treated as having the same data type as accessor's `componentType`. Both `min` and `max` arrays have the same length.  The length is determined by the value of the `type` property; it can be 1, 2, 3, 4, 9, or 16.\n\n`normalized` property has no effect on array values: they always correspond to the actual values stored in the buffer. When the accessor is sparse, this property **MUST** contain minimum values of accessor data with sparse substitution applied.
     #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub min: Vec<GltfNumber>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<Vec<GltfNumber>>,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
@@ -213,9 +213,9 @@ impl<'de> Deserialize<'de> for AccessorType {
         let value = String::deserialize(deserializer)?;
         Ok(match value.as_str() {
             "SCALAR" => AccessorType::Scalar,
-            "Vec2" => AccessorType::Vec2,
-            "Vec3" => AccessorType::Vec3,
-            "Vec4" => AccessorType::Vec4,
+            "VEC2" => AccessorType::Vec2,
+            "VEC3" => AccessorType::Vec3,
+            "VEC4" => AccessorType::Vec4,
             "MAT2" => AccessorType::Mat2,
             "MAT3" => AccessorType::Mat3,
             "MAT4" => AccessorType::Mat4,

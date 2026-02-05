@@ -4,8 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Context;
-use glam::{Mat4, Vec4};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use image::GenericImageView;
 use models::Gltf;
 use wgpu::util::DeviceExt;
@@ -15,83 +14,13 @@ use crate::{RendererCtx, SizedWindow, engine::Engine, renderer::buffers::CameraD
 
 #[derive(Debug)]
 pub struct ModelLoader {
-    nodes: Vec<Node>,
-    meshes: Vec<Mesh>,
+    scene: Scene,
     pipeline: wgpu::RenderPipeline,
     bg_camera: wgpu::BindGroup,
     bg_model: wgpu::BindGroup,
     bg_scene_textures: wgpu::BindGroup,
     buffer_camera: wgpu::Buffer,
     view_depth: wgpu::TextureView,
-}
-
-#[derive(Debug)]
-struct Material {
-    base_albedo: glam::Vec4,
-    metallic: f32,
-    roughness: f32,
-    normal_scale: f32,
-    albedo_index: i32,
-    normal_index: i32,
-}
-
-#[derive(Debug)]
-struct Node {
-    mesh_id: usize,
-    transform: Mat4,
-}
-
-#[derive(Debug)]
-struct Mesh {
-    primitive_buffer: wgpu::Buffer,
-    primitives: Vec<Primitive>,
-}
-
-#[derive(Debug)]
-struct Primitive {
-    index_buffer: wgpu::Buffer,
-    index_format: wgpu::IndexFormat,
-    index_count: u32,
-    vertex_buffer: wgpu::Buffer,
-    normal_buffer: wgpu::Buffer,
-    tangent_buffer: wgpu::Buffer,
-    uv_buffer: wgpu::Buffer,
-    material_id: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ModelDataBuffer {
-    pub matrix: [[f32; 4]; 4],
-    pub normal_matrix: [[f32; 4]; 3],
-    pub _pad: [f32; 36],
-}
-impl Default for ModelDataBuffer {
-    fn default() -> Self {
-        Self {
-            matrix: Default::default(),
-            normal_matrix: Default::default(),
-            _pad: [0.0; 36],
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct PrimitiveDataBuffer {
-    pub material_id: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct MaterialDataBuffer {
-    pub base_albedo: [f32; 4],
-    pub metallic: f32,
-    pub roughness: f32,
-    pub normal_scale: f32,
-    pub albedo_index: i32,
-    pub normal_index: i32,
-    pub _pad: [f32; 3],
 }
 
 impl ModelLoader {
@@ -106,429 +35,7 @@ impl ModelLoader {
         let mut src = BufReader::new(Cursor::new(src));
 
         let gltf = Gltf::parse(&mut src)?;
-
-        let (scene_tex_views, img_index_map) = {
-            let mut views = Vec::new();
-            let mut index_map = HashMap::new();
-            for (i, img) in gltf.meta.images.iter().enumerate() {
-                let Some(buf_view_index) = img.buffer_view else {
-                    continue;
-                };
-                let Some(buf_view) = gltf.meta.buffer_views.get(buf_view_index as usize) else {
-                    continue;
-                };
-                let src = &gltf.bin[(buf_view.byte_offset as usize)
-                    ..(buf_view.byte_offset as usize + buf_view.byte_length as usize)];
-                let loaded = match img.mime_type {
-                    Some(models::schema::MimeType::Jpeg) => {
-                        image::load_from_memory_with_format(src, image::ImageFormat::Jpeg)
-                    }
-                    Some(models::schema::MimeType::Png) => {
-                        image::load_from_memory_with_format(src, image::ImageFormat::Png)
-                    }
-                    _ => image::load_from_memory(src),
-                };
-                let label = format!("img_{}_{}", i, img.name.as_deref().unwrap_or(""));
-                let Ok(loaded) = loaded else {
-                    eprintln!("failed to load image {}", label);
-                    continue;
-                };
-
-                let dimensions = loaded.dimensions();
-                let rgba = loaded.to_rgba8();
-
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some(&label),
-                    size: wgpu::Extent3d {
-                        width: dimensions.0,
-                        height: dimensions.1,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &rgba,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(4 * dimensions.0),
-                        rows_per_image: Some(dimensions.1),
-                    },
-                    wgpu::Extent3d {
-                        width: dimensions.0,
-                        height: dimensions.1,
-                        depth_or_array_layers: 1,
-                    },
-                );
-
-                index_map.insert(i as u32, views.len());
-                views.push(texture.create_view(&Default::default()));
-            }
-            (views, index_map)
-        };
-
-        let materials = gltf
-            .meta
-            .materials
-            .into_iter()
-            .map(|m| {
-                let albedo_index = (&m.pbr_metallic_roughness)
-                    .as_ref()
-                    .and_then(|pbr| (&pbr.base_color_texture).as_ref())
-                    .and_then(|info| gltf.meta.textures.get(info.index as usize))
-                    .and_then(|tex| tex.source)
-                    .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
-                    .unwrap_or(-1);
-                let normal_index = (&m.normal_texture)
-                    .as_ref()
-                    .and_then(|info| gltf.meta.textures.get(info.index as usize))
-                    .and_then(|tex| tex.source)
-                    .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
-                    .unwrap_or(-1);
-
-                let (base_albedo, roughness, metallic) = (&m.pbr_metallic_roughness)
-                    .as_ref()
-                    .map(|pbr| {
-                        (
-                            pbr.base_color_factor,
-                            pbr.roughness_factor,
-                            pbr.metallic_factor,
-                        )
-                    })
-                    .unwrap_or((glam::Vec4::ZERO, 0.5, 0.0));
-
-                let normal_scale = (&m.normal_texture).as_ref().map(|n| n.scale).unwrap_or(0.0);
-
-                Material {
-                    base_albedo,
-                    roughness,
-                    metallic,
-                    normal_scale,
-                    albedo_index,
-                    normal_index,
-                }
-            })
-            .collect::<Vec<Material>>();
-
-        let (meshes, nodes) = {
-            let mut meshes = Vec::new();
-            let mut nodes = Vec::new();
-
-            let scene = gltf
-                .meta
-                .scenes
-                .get(gltf.meta.scene.context("no default scene")? as usize)
-                .context("unable to find default scene")?;
-
-            let mut visit_queue = VecDeque::new();
-            for node in &scene.nodes {
-                visit_queue.push_back((*node, models::GLTF_Y_UP_TO_Z_UP));
-            }
-
-            let mut mesh_id_map = HashMap::new();
-            // visit breadth first over the scene, flattening the matrix transform
-            while let Some((node_id, parent_matrix)) = visit_queue.pop_front() {
-                let node = gltf
-                    .meta
-                    .nodes
-                    .get(node_id as usize)
-                    .context(format!("unable to find node with id {}", node_id))?;
-                let transform = parent_matrix * node.transform.matrix;
-
-                // add children to visit
-                for child_id in &node.children {
-                    visit_queue.push_back((*child_id, transform));
-                }
-
-                let Some(gltf_mesh_id) = node.mesh else {
-                    continue;
-                };
-                // current node has a mesh attached
-                // our final node list is flat and only has ones with meshes
-                if let Some(mesh_id) = mesh_id_map.get(&gltf_mesh_id) {
-                    nodes.push(Node {
-                        mesh_id: *mesh_id,
-                        transform,
-                    });
-                } else {
-                    nodes.push(Node {
-                        mesh_id: meshes.len(),
-                        transform,
-                    });
-
-                    // now, create and push a new mesh
-                    let gltf_mesh = gltf
-                        .meta
-                        .meshes
-                        .get(gltf_mesh_id as usize)
-                        .context("invalid mesh id")?;
-                    let primitives = gltf_mesh
-                        .primitives
-                        .iter()
-                        .filter_map(|p| {
-                            // only pay attention to triangle list primitives for now
-                            if p.mode != models::schema::DrawMode::Triangles {
-                                return None;
-                            }
-                            let Some(material_id) = p.material else {
-                                return None;
-                            };
-
-                            // p.indices is None if there's no index buffer and it's direct vertex list
-                            // ignore that case for now
-                            let indices_acc_index = p.indices?;
-
-                            // should also get texcoord attributes here
-                            let &vpos_acc_index = p.attributes.get("POSITION")?;
-                            let &vnormal_acc_index = p.attributes.get("NORMAL")?;
-                            let &tangent_acc_index = p.attributes.get("TANGENT")?;
-                            let &uv_acc_index = p.attributes.get("TEXCOORD_0")?;
-
-                            let indices_acc =
-                                gltf.meta.accessors.get(indices_acc_index as usize)?;
-                            let indices_view_index = indices_acc.buffer_view?;
-                            let index_format = match indices_acc.component_type {
-                                models::schema::ComponentType::UnsignedShort => {
-                                    wgpu::IndexFormat::Uint16
-                                }
-                                models::schema::ComponentType::UnsignedInt => {
-                                    wgpu::IndexFormat::Uint32
-                                }
-                                _ => {
-                                    return None;
-                                }
-                            };
-                            let index_count = indices_acc.count;
-
-                            let vpos_acc = gltf.meta.accessors.get(vpos_acc_index as usize)?;
-                            if vpos_acc.component_type != models::schema::ComponentType::Float {
-                                return None;
-                            }
-                            let vpos_view_index = vpos_acc.buffer_view?;
-
-                            let vnormal_acc =
-                                gltf.meta.accessors.get(vnormal_acc_index as usize)?;
-                            let vnormal_view_index = vnormal_acc.buffer_view?;
-
-                            let tangent_acc =
-                                gltf.meta.accessors.get(tangent_acc_index as usize)?;
-                            let tangent_view_index = tangent_acc.buffer_view?;
-
-                            let uv_acc = gltf.meta.accessors.get(uv_acc_index as usize)?;
-                            let uv_view_index = uv_acc.buffer_view?;
-
-                            let index_buffer = {
-                                let view =
-                                    gltf.meta.buffer_views.get(indices_view_index as usize)?;
-                                let buffer = gltf.meta.buffers.get(view.buffer as usize)?;
-                                if buffer.uri.is_some() {
-                                    // buffer is external, ignore
-                                    return None;
-                                }
-
-                                let cmp_len = match index_format {
-                                    wgpu::IndexFormat::Uint16 => 2,
-                                    wgpu::IndexFormat::Uint32 => 4,
-                                };
-                                let start = (view.byte_offset
-                                    + indices_acc.byte_offset.unwrap_or(0))
-                                    as usize;
-                                let end = start + (indices_acc.count * cmp_len) as usize;
-
-                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some(
-                                        &[
-                                            Some("indices".into()),
-                                            gltf_mesh.name.as_deref(),
-                                            indices_acc.name.as_deref(),
-                                            view.name.as_deref(),
-                                        ]
-                                        .into_iter()
-                                        .flatten()
-                                        .collect::<Vec<&str>>()
-                                        .join("_"),
-                                    ),
-                                    contents: &gltf.bin[start..end],
-                                    usage: wgpu::BufferUsages::INDEX,
-                                })
-                            };
-
-                            let vertex_buffer = {
-                                let view = gltf.meta.buffer_views.get(vpos_view_index as usize)?;
-                                let buffer = gltf.meta.buffers.get(view.buffer as usize)?;
-                                if buffer.uri.is_some() {
-                                    // buffer is external, ignore
-                                    return None;
-                                }
-
-                                let cmp_len = 12;
-                                let start =
-                                    (view.byte_offset + vpos_acc.byte_offset.unwrap_or(0)) as usize;
-                                let end = start + (vpos_acc.count * cmp_len) as usize;
-
-                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some(
-                                        &[
-                                            Some("vertices".into()),
-                                            gltf_mesh.name.as_deref(),
-                                            vpos_acc.name.as_deref(),
-                                            view.name.as_deref(),
-                                        ]
-                                        .into_iter()
-                                        .flatten()
-                                        .collect::<Vec<&str>>()
-                                        .join("_"),
-                                    ),
-                                    contents: &gltf.bin[start..end],
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                })
-                            };
-
-                            let normal_buffer = {
-                                let view =
-                                    gltf.meta.buffer_views.get(vnormal_view_index as usize)?;
-                                let buffer = gltf.meta.buffers.get(view.buffer as usize)?;
-                                if buffer.uri.is_some() {
-                                    // buffer is external, ignore
-                                    return None;
-                                }
-
-                                let cmp_len = 12;
-                                let start = (view.byte_offset
-                                    + vnormal_acc.byte_offset.unwrap_or(0))
-                                    as usize;
-                                let end = start + (vnormal_acc.count * cmp_len) as usize;
-
-                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some(
-                                        &[
-                                            Some("normals".into()),
-                                            gltf_mesh.name.as_deref(),
-                                            vnormal_acc.name.as_deref(),
-                                            view.name.as_deref(),
-                                        ]
-                                        .into_iter()
-                                        .flatten()
-                                        .collect::<Vec<&str>>()
-                                        .join("_"),
-                                    ),
-                                    contents: &gltf.bin[start..end],
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                })
-                            };
-
-                            let tangent_buffer = {
-                                let view =
-                                    gltf.meta.buffer_views.get(tangent_view_index as usize)?;
-                                let buffer = gltf.meta.buffers.get(view.buffer as usize)?;
-                                if buffer.uri.is_some() {
-                                    // buffer is external, ignore
-                                    return None;
-                                }
-
-                                let cmp_len = 16;
-                                let start = (view.byte_offset
-                                    + tangent_acc.byte_offset.unwrap_or(0))
-                                    as usize;
-                                let end = start + (vnormal_acc.count * cmp_len) as usize;
-
-                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some(
-                                        &[
-                                            Some("normals".into()),
-                                            gltf_mesh.name.as_deref(),
-                                            tangent_acc.name.as_deref(),
-                                            view.name.as_deref(),
-                                        ]
-                                        .into_iter()
-                                        .flatten()
-                                        .collect::<Vec<&str>>()
-                                        .join("_"),
-                                    ),
-                                    contents: &gltf.bin[start..end],
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                })
-                            };
-
-                            let uv_buffer = {
-                                let view = gltf.meta.buffer_views.get(uv_view_index as usize)?;
-                                let buffer = gltf.meta.buffers.get(view.buffer as usize)?;
-                                if buffer.uri.is_some() {
-                                    // buffer is external, ignore
-                                    return None;
-                                }
-
-                                let cmp_len = 12;
-                                let start =
-                                    (view.byte_offset + uv_acc.byte_offset.unwrap_or(0)) as usize;
-                                let end = start + (uv_acc.count * cmp_len) as usize;
-
-                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some(
-                                        &[
-                                            Some("uv".into()),
-                                            gltf_mesh.name.as_deref(),
-                                            uv_acc.name.as_deref(),
-                                            view.name.as_deref(),
-                                        ]
-                                        .into_iter()
-                                        .flatten()
-                                        .collect::<Vec<&str>>()
-                                        .join("_"),
-                                    ),
-                                    contents: &gltf.bin[start..end],
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                })
-                            };
-
-                            Some(Primitive {
-                                index_buffer,
-                                index_format,
-                                index_count,
-                                vertex_buffer,
-                                normal_buffer,
-                                tangent_buffer,
-                                uv_buffer,
-                                material_id,
-                            })
-                        })
-                        .collect::<Vec<Primitive>>();
-
-                    let primitive_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("primitive data"),
-                            contents: bytemuck::cast_slice(
-                                &primitives
-                                    .iter()
-                                    .map(|n| PrimitiveDataBuffer {
-                                        material_id: n.material_id,
-                                    })
-                                    .collect::<Vec<PrimitiveDataBuffer>>(),
-                            ),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
-
-                    mesh_id_map.insert(gltf_mesh_id, meshes.len());
-                    meshes.push(Mesh {
-                        primitives,
-                        primitive_buffer,
-                    });
-                }
-            }
-
-            (meshes, nodes)
-        };
+        let scene = Scene::new(device, queue, &gltf)?;
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -580,7 +87,7 @@ impl ModelLoader {
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
-                        count: std::num::NonZeroU32::new(scene_tex_views.len() as u32),
+                        count: std::num::NonZeroU32::new(scene.views.len() as u32),
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
@@ -663,12 +170,30 @@ impl ModelLoader {
                             }],
                         },
                         wgpu::VertexBufferLayout {
-                            array_stride: 4,
+                            array_stride: 32,
                             step_mode: wgpu::VertexStepMode::Instance,
                             attributes: &[wgpu::VertexAttribute {
                                 format: wgpu::VertexFormat::Uint32,
-                                offset: 0,
+                                offset: 28,
                                 shader_location: 4,
+                            }],
+                        },
+                        wgpu::VertexBufferLayout {
+                            array_stride: 32,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &[wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 5,
+                            }],
+                        },
+                        wgpu::VertexBufferLayout {
+                            array_stride: 32,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &[wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 16,
+                                shader_location: 6,
                             }],
                         },
                     ],
@@ -705,9 +230,10 @@ impl ModelLoader {
         let buffer_model = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera data uniform buffer"),
             contents: bytemuck::cast_slice(
-                &nodes
+                &scene
+                    .nodes
                     .iter()
-                    .map(|n| ModelDataBuffer {
+                    .map(|n| ModelData {
                         matrix: n.transform.to_cols_array_2d(),
                         normal_matrix: glam::Mat3::from_mat4(n.transform.inverse())
                             .transpose()
@@ -715,16 +241,17 @@ impl ModelLoader {
                             .map(|v| [v[0], v[1], v[2], 0.0]),
                         _pad: [0.0; 36],
                     })
-                    .collect::<Vec<ModelDataBuffer>>(),
+                    .collect::<Vec<ModelData>>(),
             ),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let buffer_materials = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("material data storage buffer"),
             contents: bytemuck::cast_slice(
-                &materials
+                &scene
+                    .materials
                     .iter()
-                    .map(|mat| MaterialDataBuffer {
+                    .map(|mat| MaterialData {
                         base_albedo: mat.base_albedo.to_array(),
                         metallic: mat.metallic,
                         roughness: mat.roughness,
@@ -733,7 +260,7 @@ impl ModelLoader {
                         normal_index: mat.normal_index,
                         _pad: [0.0, 0.0, 0.0],
                     })
-                    .collect::<Vec<MaterialDataBuffer>>(),
+                    .collect::<Vec<MaterialData>>(),
             ),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
@@ -761,7 +288,7 @@ impl ModelLoader {
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureViewArray(
-                        &scene_tex_views.iter().collect::<Vec<&wgpu::TextureView>>(),
+                        &scene.views.iter().collect::<Vec<&wgpu::TextureView>>(),
                     ),
                 },
                 wgpu::BindGroupEntry {
@@ -778,8 +305,7 @@ impl ModelLoader {
         let view_depth = Self::create_screen_resource(&window, device);
 
         Ok(Self {
-            meshes,
-            nodes,
+            scene,
             pipeline,
             bg_camera,
             bg_model,
@@ -834,15 +360,17 @@ impl ModelLoader {
             pass.set_bind_group(0, &self.bg_camera, &[]);
             pass.set_bind_group(2, &self.bg_scene_textures, &[]);
 
-            for (i, node) in self.nodes.iter().enumerate() {
-                let Some(mesh) = self.meshes.get(node.mesh_id) else {
+            for (i, node) in self.scene.nodes.iter().enumerate() {
+                let Some(mesh) = self.scene.meshes.get(node.mesh_id) else {
                     continue;
                 };
                 pass.set_bind_group(1, &self.bg_model, &[256 * i as u32]);
                 pass.set_vertex_buffer(4, mesh.primitive_buffer.slice(..));
+                pass.set_vertex_buffer(5, mesh.primitive_buffer.slice(..));
+                pass.set_vertex_buffer(6, mesh.primitive_buffer.slice(..));
                 for (j, primitive) in mesh.primitives.iter().enumerate() {
                     pass.set_index_buffer(primitive.index_buffer.slice(..), primitive.index_format);
-                    pass.set_vertex_buffer(0, primitive.vertex_buffer.slice(..));
+                    pass.set_vertex_buffer(0, primitive.position_buffer.slice(..));
                     pass.set_vertex_buffer(1, primitive.normal_buffer.slice(..));
                     pass.set_vertex_buffer(2, primitive.uv_buffer.slice(..));
                     pass.set_vertex_buffer(3, primitive.tangent_buffer.slice(..));
@@ -859,9 +387,6 @@ impl ModelLoader {
     pub fn handle_resize(&mut self, window: &Window, device: &wgpu::Device) {
         self.view_depth = Self::create_screen_resource(window, device);
     }
-}
-
-impl ModelLoader {
     fn create_screen_resource(window: &Window, device: &wgpu::Device) -> wgpu::TextureView {
         let size = window.size();
 
@@ -881,5 +406,546 @@ impl ModelLoader {
         });
 
         texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ModelData {
+    matrix: [[f32; 4]; 4],
+    normal_matrix: [[f32; 4]; 3],
+    _pad: [f32; 36],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct PrimitiveData {
+    min: [f32; 3],
+    _pad: f32,
+    max: [f32; 3],
+    material_id: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct MaterialData {
+    base_albedo: [f32; 4],
+    metallic: f32,
+    roughness: f32,
+    normal_scale: f32,
+    albedo_index: i32,
+    normal_index: i32,
+    _pad: [f32; 3],
+}
+
+/// Parsed scene data
+#[derive(Debug)]
+struct Scene {
+    nodes: Vec<Node>,
+    meshes: Vec<Mesh>,
+    materials: Vec<Material>,
+    views: Vec<wgpu::TextureView>,
+}
+
+#[derive(Debug)]
+struct Material {
+    base_albedo: glam::Vec4,
+    metallic: f32,
+    roughness: f32,
+    normal_scale: f32,
+    albedo_index: i32,
+    normal_index: i32,
+}
+
+#[derive(Debug)]
+struct Node {
+    mesh_id: usize,
+    transform: glam::Mat4,
+}
+
+#[derive(Debug)]
+struct Mesh {
+    primitive_buffer: wgpu::Buffer,
+    primitives: Vec<Primitive>,
+}
+
+#[derive(Debug)]
+struct Primitive {
+    index_buffer: wgpu::Buffer,
+    index_format: wgpu::IndexFormat,
+    index_count: u32,
+    position_buffer: wgpu::Buffer,
+    normal_buffer: wgpu::Buffer,
+    tangent_buffer: wgpu::Buffer,
+    uv_buffer: wgpu::Buffer,
+    material_id: u32,
+    min: glam::Vec3,
+    max: glam::Vec3,
+}
+
+impl Scene {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, gltf: &Gltf) -> Result<Self> {
+        let mut views = Vec::new();
+        let mut img_index_map = HashMap::new();
+        for (i, img) in gltf.meta.images.iter().enumerate() {
+            let label = format!("img_{}_{}", i, img.name.as_deref().unwrap_or(""));
+
+            match wgpu::Texture::from_gltf(device, queue, &gltf, img, &label) {
+                Ok(texture) => {
+                    img_index_map.insert(i as u32, views.len());
+                    views.push(texture.create_view(&Default::default()));
+                }
+                Err(err) => {
+                    eprintln!("error loading image {} - {}", &label, err);
+                }
+            }
+        }
+
+        let materials = (&gltf.meta.materials)
+            .iter()
+            .map(|m| Material::from_gltf(&gltf, &img_index_map, m))
+            .collect::<Vec<Material>>();
+
+        let mut meshes = Vec::new();
+        let mut nodes = Vec::new();
+        let scene = gltf
+            .meta
+            .scenes
+            .get(gltf.meta.scene.context("no default scene")? as usize)
+            .context("unable to find default scene")?;
+
+        let mut visit_queue = VecDeque::new();
+        for node in &scene.nodes {
+            visit_queue.push_back((*node, models::GLTF_Y_UP_TO_Z_UP));
+        }
+
+        let mut mesh_id_map = HashMap::new();
+        // visit breadth first over the scene, flattening the matrix transform
+        while let Some((node_id, parent_matrix)) = visit_queue.pop_front() {
+            let node = gltf
+                .meta
+                .nodes
+                .get(node_id as usize)
+                .context(format!("unable to find node with id {}", node_id))?;
+            let transform = parent_matrix * node.transform.matrix;
+
+            // add children to visit
+            for child_id in &node.children {
+                visit_queue.push_back((*child_id, transform));
+            }
+
+            let Some(gltf_mesh_id) = node.mesh else {
+                continue;
+            };
+            // current node has a mesh attached
+            // our final node list is flat and only has ones with meshes
+            let mesh_id = match mesh_id_map.get(&gltf_mesh_id) {
+                Some(id) => anyhow::Ok(*id),
+                None => {
+                    // now, create and push a new mesh
+                    let gltf_mesh = gltf
+                        .meta
+                        .meshes
+                        .get(gltf_mesh_id as usize)
+                        .context("invalid mesh id")?;
+                    let primitives = gltf_mesh
+                        .primitives
+                        .iter()
+                        .filter_map(|p| {
+                            Primitive::from_gltf(device, gltf, p)
+                                .inspect_err(|err| eprintln!("error loading primitive: {:#?}", err))
+                                .ok()
+                        })
+                        .collect::<Vec<Primitive>>();
+
+                    let primitive_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("primitive data"),
+                            contents: bytemuck::cast_slice(
+                                &primitives
+                                    .iter()
+                                    .map(|primitive| PrimitiveData {
+                                        min: primitive.min.to_array(),
+                                        _pad: 0.0,
+                                        max: primitive.max.to_array(),
+                                        material_id: primitive.material_id,
+                                    })
+                                    .collect::<Vec<PrimitiveData>>(),
+                            ),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+
+                    mesh_id_map.insert(gltf_mesh_id, meshes.len());
+                    meshes.push(Mesh {
+                        primitives,
+                        primitive_buffer,
+                    });
+                    Ok(meshes.len() - 1)
+                }
+            }?;
+
+            nodes.push(Node { mesh_id, transform });
+        }
+
+        Ok(Self {
+            nodes,
+            meshes,
+            views,
+            materials,
+        })
+    }
+}
+
+trait TextureExt {
+    fn from_gltf(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        gltf: &Gltf,
+        img: &models::schema::Image,
+        label: &str,
+    ) -> Result<wgpu::Texture>;
+}
+impl TextureExt for wgpu::Texture {
+    fn from_gltf(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        gltf: &Gltf,
+        img: &models::schema::Image,
+        label: &str,
+    ) -> Result<Self> {
+        let buf_view_index = img
+            .buffer_view
+            .context("no buffer view for image. TODO: load image uri's")?;
+        let buf_view = gltf
+            .meta
+            .buffer_views
+            .get(buf_view_index as usize)
+            .context("unable to find buffer view")?;
+
+        let src = &gltf.bin[(buf_view.byte_offset as usize)
+            ..(buf_view.byte_offset as usize + buf_view.byte_length as usize)];
+
+        let loaded = match img.mime_type {
+            Some(models::schema::MimeType::Jpeg) => {
+                image::load_from_memory_with_format(src, image::ImageFormat::Jpeg)
+            }
+            Some(models::schema::MimeType::Png) => {
+                image::load_from_memory_with_format(src, image::ImageFormat::Png)
+            }
+            _ => image::load_from_memory(src),
+        }?;
+
+        let dimensions = loaded.dimensions();
+        let rgba = loaded.to_rgba8();
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&label),
+            size: wgpu::Extent3d {
+                width: dimensions.0,
+                height: dimensions.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * dimensions.0),
+                rows_per_image: Some(dimensions.1),
+            },
+            wgpu::Extent3d {
+                width: dimensions.0,
+                height: dimensions.1,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        Ok(texture)
+    }
+}
+
+impl Material {
+    fn from_gltf(
+        gltf: &Gltf,
+        img_index_map: &HashMap<u32, usize>,
+        m: &models::schema::Material,
+    ) -> Self {
+        let albedo_index = m
+            .pbr_metallic_roughness
+            .as_ref()
+            .and_then(|pbr| (&pbr.base_color_texture).as_ref())
+            .and_then(|info| gltf.meta.textures.get(info.index as usize))
+            .and_then(|tex| tex.source)
+            .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
+            .unwrap_or(-1);
+        let normal_index = (&m.normal_texture)
+            .as_ref()
+            .and_then(|info| gltf.meta.textures.get(info.index as usize))
+            .and_then(|tex| tex.source)
+            .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
+            .unwrap_or(-1);
+
+        let (base_albedo, roughness, metallic) = (&m.pbr_metallic_roughness)
+            .as_ref()
+            .map(|pbr| {
+                (
+                    pbr.base_color_factor,
+                    pbr.roughness_factor,
+                    pbr.metallic_factor,
+                )
+            })
+            .unwrap_or((glam::Vec4::ZERO, 0.5, 0.0));
+
+        let normal_scale = (&m.normal_texture).as_ref().map(|n| n.scale).unwrap_or(0.0);
+
+        Self {
+            base_albedo,
+            roughness,
+            metallic,
+            normal_scale,
+            albedo_index,
+            normal_index,
+        }
+    }
+}
+
+impl Primitive {
+    fn from_gltf(
+        device: &wgpu::Device,
+        gltf: &Gltf,
+        p: &models::schema::Primitive,
+    ) -> Result<Self> {
+        ensure!(
+            p.mode == models::schema::DrawMode::Triangles,
+            "only DrawMode::Triangles is supported. TODO: add others"
+        );
+        let material_id = p.material.context("primitive has no material ID")?;
+
+        struct PrimitiveBufferDescriptor<'a> {
+            accessor: &'a models::schema::Accessor,
+            data: &'a [u8],
+        }
+        // walks gltf and finds accessor, buffer view, buffer
+        let get_buf_descriptor =
+            |acc_index: u32,
+             cmp_type: Option<models::schema::ComponentType>,
+             acc_type: Option<models::schema::AccessorType>| {
+                let accessor = gltf
+                    .meta
+                    .accessors
+                    .get(acc_index as usize)
+                    .context("accessor not found")?;
+                let view = accessor
+                    .buffer_view
+                    .context("no buffer view specified")
+                    .and_then(|index| {
+                        gltf.meta
+                            .buffer_views
+                            .get(index as usize)
+                            .context("no buffer view found")
+                    })?;
+                let buffer = gltf
+                    .meta
+                    .buffers
+                    .get(view.buffer as usize)
+                    .context("no buffer source found")?;
+                ensure!(
+                    buffer.uri.is_none(),
+                    "buffer has external source. TODO: support this"
+                );
+                ensure!(
+                    cmp_type
+                        .as_ref()
+                        .is_none_or(|ty| *ty == accessor.component_type),
+                    format!(
+                        "component type mismatch. expected {:?}, received {:?}",
+                        cmp_type.unwrap(),
+                        accessor.component_type
+                    )
+                );
+                ensure!(
+                    acc_type.as_ref().is_none_or(|ty| *ty == accessor.ty),
+                    format!(
+                        "accessor type mismatch. expected {:?}, received {:?}",
+                        acc_type.unwrap(),
+                        accessor.ty,
+                    )
+                );
+                let mut component_length = match accessor.component_type {
+                    models::schema::ComponentType::Byte
+                    | models::schema::ComponentType::UnsignedByte => 1,
+                    models::schema::ComponentType::Short
+                    | models::schema::ComponentType::UnsignedShort => 2,
+                    models::schema::ComponentType::UnsignedInt
+                    | models::schema::ComponentType::Float => 4,
+                    models::schema::ComponentType::Other(_) => bail!("invalid component type"),
+                };
+                component_length *= match accessor.ty {
+                    models::schema::AccessorType::Scalar => 1,
+                    models::schema::AccessorType::Vec2 => 2,
+                    models::schema::AccessorType::Vec3 => 3,
+                    models::schema::AccessorType::Vec4 => 4,
+                    models::schema::AccessorType::Mat2 => 4,
+                    models::schema::AccessorType::Mat3 => 9,
+                    models::schema::AccessorType::Mat4 => 16,
+                    models::schema::AccessorType::Other(_) => {
+                        bail!("invalid accessor element type")
+                    }
+                };
+                let start = (view.byte_offset + accessor.byte_offset.unwrap_or(0)) as usize;
+                let end = start + (component_length * accessor.count) as usize;
+                if start >= buffer.byte_length as usize || end >= buffer.byte_length as usize {
+                    bail!("accessor view extends beyond buffer's bounds");
+                }
+                Ok(PrimitiveBufferDescriptor {
+                    accessor,
+                    data: &gltf.bin[start..end],
+                })
+            };
+
+        let indices = p
+            .indices
+            .context("no index buffer. TODO: add support for direct vertex lists")
+            .and_then(|i| {
+                get_buf_descriptor(i, None, Some(models::schema::AccessorType::Scalar))
+                    .context("index buffer")
+            })?;
+        let index_format = match indices.accessor.component_type {
+            models::schema::ComponentType::UnsignedShort => wgpu::IndexFormat::Uint16,
+            models::schema::ComponentType::UnsignedInt => wgpu::IndexFormat::Uint32,
+            _ => {
+                bail!("index format must be be either u16 or u32");
+            }
+        };
+
+        let positions = p
+            .attributes
+            .get("POSITION")
+            .context("no attribute")
+            .and_then(|i| {
+                get_buf_descriptor(
+                    *i,
+                    Some(models::schema::ComponentType::Float),
+                    Some(models::schema::AccessorType::Vec3),
+                )
+            })
+            .context("vertex position buffer")?;
+
+        let normals = p
+            .attributes
+            .get("NORMAL")
+            .context("attribute not defined. TODO: add support for this")
+            .and_then(|i| {
+                get_buf_descriptor(
+                    *i,
+                    Some(models::schema::ComponentType::Float),
+                    Some(models::schema::AccessorType::Vec3),
+                )
+            })
+            .context("vertex normal buffer")?;
+
+        let tangents = p
+            .attributes
+            .get("TANGENT")
+            .context("attribute not defined. TODO: add support for this")
+            .and_then(|i| {
+                get_buf_descriptor(
+                    *i,
+                    Some(models::schema::ComponentType::Float),
+                    Some(models::schema::AccessorType::Vec4),
+                )
+            })
+            .context("vertex tangent buffer")?;
+
+        let uv = p
+            .attributes
+            .get("TEXCOORD_0")
+            .context("attribute not defined. TODO: add support for this")
+            .and_then(|i| {
+                get_buf_descriptor(
+                    *i,
+                    Some(models::schema::ComponentType::Float),
+                    Some(models::schema::AccessorType::Vec2),
+                )
+            })
+            .context("vertex coordinate buffer")?;
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("index buffer"),
+            contents: indices.data,
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let position_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("vertex position buffer"),
+            contents: positions.data,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let normal_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("vertex normals buffer"),
+            contents: normals.data,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let tangent_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("vertex tangent buffer"),
+            contents: tangents.data,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let uv_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("tex coord buffer"),
+            contents: uv.data,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let min = &positions
+            .accessor
+            .min
+            .as_ref()
+            .context("position attribute is missing minimum bounds")?;
+        let max = &positions
+            .accessor
+            .max
+            .as_ref()
+            .context("position attribute is missing maximum bounds")?;
+        let [min, max] = [min, max].map(|bd| {
+            glam::Vec3::from_slice(
+                &bd[..3]
+                    .iter()
+                    .map(|x| match x {
+                        models::schema::GltfNumber::Float(x) => *x as f32,
+                        _ => 0.0,
+                    })
+                    .collect::<Vec<f32>>(),
+            )
+        });
+
+        Ok(Primitive {
+            index_buffer,
+            index_format,
+            index_count: indices.accessor.count,
+            position_buffer,
+            normal_buffer,
+            tangent_buffer,
+            uv_buffer,
+            material_id,
+            min,
+            max,
+        })
     }
 }
