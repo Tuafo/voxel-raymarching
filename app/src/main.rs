@@ -80,13 +80,20 @@ impl State {
 
         let mut features = wgpu::Features::default();
         features |= wgpu::Features::FLOAT32_FILTERABLE;
+        features |= wgpu::Features::TEXTURE_BINDING_ARRAY;
+        features |= wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
         if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             features |= wgpu::Features::TIMESTAMP_QUERY;
         }
 
+        let mut limits = wgpu::Limits::default();
+        limits.max_sampled_textures_per_shader_stage = 128;
+        limits.max_binding_array_elements_per_shader_stage = 128;
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_features: features,
+                required_limits: limits,
                 ..Default::default()
             })
             .await
@@ -103,7 +110,7 @@ impl State {
 
         let renderer = Renderer::new(Arc::clone(&window), &device, format, &engine);
 
-        let model = ModelLoader::new(Arc::clone(&window), &device, format, &engine)?;
+        let model = ModelLoader::new(Arc::clone(&window), &device, &queue, format, &engine)?;
 
         let ui = Ui::new(&window, &device, format);
 

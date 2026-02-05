@@ -16,3 +16,4 @@ glam = { version = "0.31.0", features = ["serde"] }
 pollster = "0.4.0"
 wgpu = "27.0.1"
 winit = "0.30.12"
+image = { version = "0.25.9", features = ["jpeg", "png"] }
