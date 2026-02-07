@@ -9,7 +9,7 @@ use winit::{
     application::ApplicationHandler, event::DeviceEvent, event::WindowEvent, window::Window,
 };
 
-use crate::renderer::loader::ModelLoader;
+use crate::renderer::loader::ModelViewer;
 use crate::{
     engine::{Engine, EngineCtx},
     renderer::{Renderer, RendererCtx},
@@ -26,11 +26,8 @@ impl ApplicationHandler for Program {
             .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))
             .with_title("wgpu demo");
 
-        let window = event_loop.create_window(cfg).unwrap();
-        let window = Arc::new(window);
-
-        let state = block_on(State::new(window.clone())).unwrap();
-        self.state = Some(state);
+        let window = Arc::new(event_loop.create_window(cfg).unwrap());
+        self.state = Some(block_on(State::new(window.clone())).unwrap());
 
         window.request_redraw();
     }
@@ -67,7 +64,7 @@ struct State {
     ui: Ui,
     prev_time: Option<Instant>,
 
-    model: ModelLoader,
+    model_debug: Option<ModelViewer>,
 }
 
 impl State {
@@ -108,9 +105,10 @@ impl State {
 
         let engine = Engine::new(&window);
 
-        let renderer = Renderer::new(Arc::clone(&window), &device, format, &engine);
+        let renderer = Renderer::new(Arc::clone(&window), &device, &queue, format, &engine);
 
-        let model = ModelLoader::new(Arc::clone(&window), &device, &queue, format, &engine)?;
+        // let model_debug = Some(ModelViewer::new(Arc::clone(&window), &device, &queue, format, &engine)?);
+        let model_debug = None;
 
         let ui = Ui::new(&window, &device, format);
 
@@ -124,7 +122,7 @@ impl State {
             renderer,
             ui,
             prev_time: None,
-            model,
+            model_debug,
         };
 
         _self.configure_surface();
@@ -144,28 +142,30 @@ impl State {
             },
         );
 
-        // self.renderer.frame(
-        //     &delta_time,
-        //     &mut RendererCtx {
-        //         window: &self.window,
-        //         device: &self.device,
-        //         queue: &self.queue,
-        //         surface: &self.surface,
-        //         format: &self.format,
-        //         engine: &self.engine,
-        //         ui: &mut self.ui,
-        //     },
-        // );
-
-        self.model.frame(&mut RendererCtx {
-            window: &self.window,
-            device: &self.device,
-            queue: &self.queue,
-            surface: &self.surface,
-            format: &self.format,
-            engine: &self.engine,
-            ui: &mut self.ui,
-        });
+        if let Some(model_debug) = &mut self.model_debug {
+            model_debug.frame(&mut RendererCtx {
+                window: &self.window,
+                device: &self.device,
+                queue: &self.queue,
+                surface: &self.surface,
+                format: &self.format,
+                engine: &self.engine,
+                ui: &mut self.ui,
+            });
+        } else {
+            self.renderer.frame(
+                &delta_time,
+                &mut RendererCtx {
+                    window: &self.window,
+                    device: &self.device,
+                    queue: &self.queue,
+                    surface: &self.surface,
+                    format: &self.format,
+                    engine: &self.engine,
+                    ui: &mut self.ui,
+                },
+            );
+        }
 
         self.engine.input.frame();
 
@@ -178,7 +178,9 @@ impl State {
 
         self.engine.handle_resize(&self.window);
         self.renderer.handle_resize(&self.window, &self.device);
-        self.model.handle_resize(&self.window, &self.device);
+        if let Some(model_debug) = &mut self.model_debug {
+            model_debug.handle_resize(&self.window, &self.device);
+        }
     }
 
     fn handle_input(

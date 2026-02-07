@@ -1,29 +1,613 @@
 use std::{
-    collections::{HashMap, VecDeque},
     io::{BufReader, Cursor},
+    num::NonZeroU32,
     sync::Arc,
+    time::Instant,
 };
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
-use image::GenericImageView;
-use models::Gltf;
+use anyhow::{Result, bail};
+use models::{Gltf, Scene};
+use vox::tree::VoxelTree;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::{RendererCtx, SizedWindow, engine::Engine, renderer::buffers::CameraDataBuffer};
 
+// pub fn load_and_voxelize_model() -> Result<VoxelTree> {
+//     const voxel_scale: f32 = 10.0;
+//     let src = std::include_bytes!("../../assets/sponza.glb");
+//     let mut src = bufreader::new(cursor::new(src));
+
+//     let mut timer = Instant::now();
+
+//     let gltf = Gltf::parse(&mut src)?;
+//     println!("gltf parse: {:?}", timer.elapsed());
+//     timer = Instant::now();
+
+//     let scene = Scene::from_gltf(&gltf)?;
+//     println!("scene parse: {:?}", timer.elapsed());
+//     timer = Instant::now();
+
+//     let mut tri_count = 0;
+//     let scene_base: glam::Vec3A = (scene.min.floor() * VOXEL_SCALE).into();
+//     let scene_size = ((scene.max - scene.min).ceil() * VOXEL_SCALE).as_uvec3();
+
+//     enum Indices<'a> {
+//         U16(&'a [[u16; 3]]),
+//         U32(&'a [[u32; 3]]),
+//     }
+
+//     let mut tree = VoxelTree::new(scene_size);
+
+//     for node in &scene.nodes {
+//         let Some(mesh) = scene.meshes.get(node.mesh_id) else {
+//             continue;
+//         };
+//         for primitive in &mesh.primitives {
+//             tri_count += primitive.indices.count / 3;
+
+//             let indices = match primitive.indices.component_type {
+//                 models::schema::ComponentType::UnsignedShort => Indices::U16(
+//                     bytemuck::cast_slice(&gltf.bin[primitive.indices.start..primitive.indices.end])
+//                         .as_chunks()
+//                         .0,
+//                 ),
+//                 models::schema::ComponentType::UnsignedInt => Indices::U32(
+//                     bytemuck::cast_slice(&gltf.bin[primitive.indices.start..primitive.indices.end])
+//                         .as_chunks()
+//                         .0,
+//                 ),
+//                 _ => bail!("invalid index format"),
+//             };
+//             let positions: &[glam::Vec3] =
+//                 bytemuck::cast_slice(&gltf.bin[primitive.positions.start..primitive.positions.end]);
+
+//             const EXTENT: glam::Vec3A = glam::vec3a(0.5, 0.5, 0.5);
+
+//             for tri in 0..(primitive.indices.count as usize / 3) {
+//                 let i = match indices {
+//                     Indices::U16(v) => v[tri].map(|v| v as usize),
+//                     Indices::U32(v) => v[tri].map(|v| v as usize),
+//                 };
+//                 let [v0, v1, v2] =
+//                     i.map(|j| node.transform.transform_point3a(positions[j].into()) * VOXEL_SCALE);
+
+//                 let intersects = |center: glam::Vec3A| {
+//                     let v0 = v0 - center;
+//                     let v1 = v1 - center;
+//                     let v2 = v2 - center;
+
+//                     // Test AABB face normals (X, Y, Z axes)
+//                     if v0.x.min(v1.x).min(v2.x) > EXTENT.x || v0.x.max(v1.x).max(v2.x) < -EXTENT.x {
+//                         return false;
+//                     }
+//                     if v0.y.min(v1.y).min(v2.y) > EXTENT.y || v0.y.max(v1.y).max(v2.y) < -EXTENT.y {
+//                         return false;
+//                     }
+//                     if v0.z.min(v1.z).min(v2.z) > EXTENT.z || v0.z.max(v1.z).max(v2.z) < -EXTENT.z {
+//                         return false;
+//                     }
+
+//                     // Test triangle normal
+//                     let e0 = v1 - v0;
+//                     let e1 = v2 - v1;
+//                     let e2 = v0 - v2;
+//                     let normal = e0.cross(e1);
+//                     let d = normal.dot(v0);
+//                     let r = EXTENT.x * normal.x.abs()
+//                         + EXTENT.y * normal.y.abs()
+//                         + EXTENT.z * normal.z.abs();
+//                     if d.abs() > r {
+//                         return false;
+//                     }
+
+//                     // Test 9 edge cross-product axes (3 edges x 3 AABB axes)
+//                     // Axis: X x e0
+//                     let p0 = v0.z * v1.y - v0.y * v1.z;
+//                     let p2 = v2.z * (v1.y - v0.y) - v2.y * (v1.z - v0.z);
+//                     let rad = EXTENT.y * e0.z.abs() + EXTENT.z * e0.y.abs();
+//                     if p0.min(p2) > rad || p0.max(p2) < -rad {
+//                         return false;
+//                     }
+
+//                     // Axis: Y x e0
+//                     let p0 = v0.x * v1.z - v0.z * v1.x;
+//                     let p2 = v2.x * (v1.z - v0.z) - v2.z * (v1.x - v0.x);
+//                     let rad = EXTENT.x * e0.z.abs() + EXTENT.z * e0.x.abs();
+//                     if p0.min(p2) > rad || p0.max(p2) < -rad {
+//                         return false;
+//                     }
+
+//                     // Axis: Z x e0
+//                     let p0 = v0.y * v1.x - v0.x * v1.y;
+//                     let p2 = v2.y * (v1.x - v0.x) - v2.x * (v1.y - v0.y);
+//                     let rad = EXTENT.x * e0.y.abs() + EXTENT.y * e0.x.abs();
+//                     if p0.min(p2) > rad || p0.max(p2) < -rad {
+//                         return false;
+//                     }
+
+//                     // Axis: X x e1
+//                     let p1 = v1.z * v2.y - v1.y * v2.z;
+//                     let p0 = v0.z * (v2.y - v1.y) - v0.y * (v2.z - v1.z);
+//                     let rad = EXTENT.y * e1.z.abs() + EXTENT.z * e1.y.abs();
+//                     if p0.min(p1) > rad || p0.max(p1) < -rad {
+//                         return false;
+//                     }
+
+//                     // Axis: Y x e1
+//                     let p1 = v1.x * v2.z - v1.z * v2.x;
+//                     let p0 = v0.x * (v2.z - v1.z) - v0.z * (v2.x - v1.x);
+//                     let rad = EXTENT.x * e1.z.abs() + EXTENT.z * e1.x.abs();
+//                     if p0.min(p1) > rad || p0.max(p1) < -rad {
+//                         return false;
+//                     }
+
+//                     // Axis: Z x e1
+//                     let p1 = v1.y * v2.x - v1.x * v2.y;
+//                     let p0 = v0.y * (v2.x - v1.x) - v0.x * (v2.y - v1.y);
+//                     let rad = EXTENT.x * e1.y.abs() + EXTENT.y * e1.x.abs();
+//                     if p0.min(p1) > rad || p0.max(p1) < -rad {
+//                         return false;
+//                     }
+
+//                     // Axis: X x e2
+//                     let p2 = v2.z * v0.y - v2.y * v0.z;
+//                     let p1 = v1.z * (v0.y - v2.y) - v1.y * (v0.z - v2.z);
+//                     let rad = EXTENT.y * e2.z.abs() + EXTENT.z * e2.y.abs();
+//                     if p1.min(p2) > rad || p1.max(p2) < -rad {
+//                         return false;
+//                     }
+
+//                     // Axis: Y x e2
+//                     let p2 = v2.x * v0.z - v2.z * v0.x;
+//                     let p1 = v1.x * (v0.z - v2.z) - v1.z * (v0.x - v2.x);
+//                     let rad = EXTENT.x * e2.z.abs() + EXTENT.z * e2.x.abs();
+//                     if p1.min(p2) > rad || p1.max(p2) < -rad {
+//                         return false;
+//                     }
+
+//                     // Axis: Z x e2
+//                     let p2 = v2.y * v0.x - v2.x * v0.y;
+//                     let p1 = v1.y * (v0.x - v2.x) - v1.x * (v0.y - v2.y);
+//                     let rad = EXTENT.x * e2.y.abs() + EXTENT.y * e2.x.abs();
+//                     if p1.min(p2) > rad || p1.max(p2) < -rad {
+//                         return false;
+//                     }
+
+//                     true
+//                 };
+
+//                 let min = v0.min(v1).min(v2);
+//                 let max = v0.max(v1).max(v2);
+
+//                 let start = (min - scene_base).floor().as_uvec3().max(glam::UVec3::ZERO);
+//                 let end = (max - scene_base).ceil().as_uvec3().min(scene_size);
+
+//                 for x in start.x..end.x {
+//                     for y in start.y..end.y {
+//                         for z in start.z..end.z {
+//                             if tree.get(glam::uvec3(x, y, z)) != 0 {
+//                                 continue;
+//                             }
+//                             let center =
+//                                 scene_base + glam::vec3a(x as f32, y as f32, z as f32) + EXTENT;
+//                             if intersects(center) {
+//                                 tree.insert(glam::uvec3(x, y, z), 1);
+//                             }
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     println!("voxelize: {:?}", timer.elapsed());
+//     println!(" -- triangles: {}", tri_count);
+
+//     Ok(tree)
+// }
+
+const VOXEL_SCALE: f32 = 10.0;
+
+pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
+    let src = std::include_bytes!("../../assets/sponza.glb");
+    let mut src = BufReader::new(Cursor::new(src));
+
+    let gltf = Gltf::parse(&mut src)?;
+    let scene = Scene::from_gltf(&gltf)?;
+    let base = scene.min.floor().as_uvec3();
+    let size = ((scene.max.ceil() - scene.min.floor()) * VOXEL_SCALE).as_uvec3();
+
+    let bg_layout_shared = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("shared voxelizer bind group layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: std::num::NonZeroU32::new(scene.textures.len() as u32),
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                },
+                count: None,
+            },
+        ],
+    });
+    let bg_layout_per_primitive =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("per-primitive voxelizer bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("voxelizer pipeline layout"),
+        bind_group_layouts: &[&bg_layout_shared, &bg_layout_per_primitive],
+        push_constant_ranges: &[],
+    });
+    let pipeline = {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("voxelize"),
+            source: wgpu::ShaderSource::Wgsl(std::include_str!("../shaders/voxelize.wgsl").into()),
+        });
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("voxelize pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("compute_main"),
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    };
+
+    // result 3d voxel texture
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("voxel texture"),
+        size: wgpu::Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: size.z,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING,
+        view_formats: &[],
+    });
+
+    // shared bind group
+    let bg_shared = {
+        #[repr(C)]
+        #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct SceneBufferEntry {
+            base: glam::Vec4,
+            size: glam::Vec3,
+            scale: f32,
+        }
+        // binding 0
+        let buffer_scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("material data storage buffer"),
+            contents: bytemuck::cast_slice(&[SceneBufferEntry {
+                base: base.as_vec3().extend(0.0),
+                size: size.as_vec3(),
+                scale: VOXEL_SCALE,
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        #[repr(C)]
+        #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct MaterialBufferEntry {
+            base_albedo: glam::Vec4,
+            metallic: f32,
+            roughness: f32,
+            normal_scale: f32,
+            albedo_index: i32,
+            normal_index: i32,
+            _pad: [f32; 3],
+        }
+        // binding 1
+        let buffer_materials = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("material data storage buffer"),
+            contents: bytemuck::cast_slice(
+                &scene
+                    .materials
+                    .iter()
+                    .map(|mat| MaterialBufferEntry {
+                        base_albedo: mat.base_albedo,
+                        metallic: mat.metallic,
+                        roughness: mat.roughness,
+                        normal_scale: mat.normal_scale,
+                        albedo_index: mat.albedo_index,
+                        normal_index: mat.normal_index,
+                        _pad: [0.0; 3],
+                    })
+                    .collect::<Vec<MaterialBufferEntry>>(),
+            ),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        // binding 2
+        let texture_views = scene
+            .textures
+            .iter()
+            .map(|tex| {
+                let (width, height) = tex.dimensions();
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &tex,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * width),
+                        rows_per_image: Some(height),
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    ..Default::default()
+                });
+
+                view
+            })
+            .collect::<Vec<wgpu::TextureView>>();
+        // binding 3
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        // binding 4
+        // out texture (already made)
+
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shared voxelizer bind group"),
+            layout: &bg_layout_shared,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer_scene.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buffer_materials.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureViewArray(
+                        &texture_views.iter().collect::<Vec<&wgpu::TextureView>>(),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&texture.create_view(
+                        &wgpu::TextureViewDescriptor {
+                            label: Some("voxelized result texture output view"),
+                            usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+                            ..Default::default()
+                        },
+                    )),
+                },
+            ],
+        })
+    };
+
+    struct PrimitiveGroup {
+        bg: wgpu::BindGroup,
+        index_count: u32,
+    }
+    let mut bg_per_primitive = Vec::new();
+    for node in &scene.nodes {
+        let Some(mesh) = scene.meshes.get(node.mesh_id) else {
+            continue;
+        };
+        for primitive in &mesh.primitives {
+            // each (object, primitive) pair in the scene gets its own bind group
+            // inefficient but idc its just a generation step for now
+
+            #[repr(C)]
+            #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+            struct PrimitiveBufferEntry {
+                matrix: glam::Mat4,
+                normal_matrix: [[f32; 4]; 3],
+                material_id: u32,
+                index_count: u32,
+                _pad: [f32; 2],
+            }
+            // binding 0
+            let buffer_primitive = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("primitive data uniform buffer"),
+                contents: bytemuck::cast_slice(&[PrimitiveBufferEntry {
+                    matrix: node.transform,
+                    normal_matrix: glam::Mat3::from_mat4(node.transform.inverse())
+                        .transpose()
+                        .to_cols_array_2d()
+                        .map(|v| [v[0], v[1], v[2], 0.0]),
+                    material_id: primitive.material_id,
+                    index_count: primitive.indices.count,
+                    _pad: [0.0; 2],
+                }]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+            // binding 1
+            let indices_u32 =
+                bytemuck::cast_slice(&gltf.bin[primitive.indices.start..primitive.indices.end])
+                    .iter()
+                    .map(|idx: &u16| *idx as u32)
+                    .collect::<Vec<u32>>();
+            let buffer_indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("primitive indices data"),
+                contents: match primitive.indices.component_type {
+                    models::schema::ComponentType::UnsignedShort => {
+                        &bytemuck::cast_slice(&indices_u32)
+                    }
+                    _ => &gltf.bin[primitive.indices.start..primitive.indices.end],
+                },
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            // binding 2
+            let buffer_positions = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("primitive vertex position data"),
+                contents: &gltf.bin[primitive.positions.start..primitive.positions.end],
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+
+            bg_per_primitive.push(PrimitiveGroup {
+                bg: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("per primitive voxelize bind group"),
+                    layout: &bg_layout_per_primitive,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buffer_primitive.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: buffer_indices.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: buffer_positions.as_entire_binding(),
+                        },
+                    ],
+                }),
+                index_count: primitive.indices.count,
+            });
+        }
+    }
+
+    // now execute
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let descriptor = wgpu::ComputePassDescriptor {
+            label: Some("voxelization pass"),
+            timestamp_writes: None,
+        };
+        let mut pass = encoder.begin_compute_pass(&descriptor);
+
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, Some(&bg_shared), &[]);
+
+        for primitive in bg_per_primitive {
+            pass.set_bind_group(1, Some(&primitive.bg), &[]);
+
+            let tris = primitive.index_count / 3;
+            pass.dispatch_workgroups(tris.div_ceil(64), 1, 1);
+        }
+    }
+    queue.submit([encoder.finish()]);
+
+    Ok(texture)
+}
+
 #[derive(Debug)]
-pub struct ModelLoader {
+pub struct ModelViewer {
     scene: Scene,
     pipeline: wgpu::RenderPipeline,
     bg_camera: wgpu::BindGroup,
     bg_model: wgpu::BindGroup,
     bg_scene_textures: wgpu::BindGroup,
+    mesh_buffers: Vec<MeshBuffers>,
     buffer_camera: wgpu::Buffer,
     view_depth: wgpu::TextureView,
 }
 
-impl ModelLoader {
+impl ModelViewer {
     pub fn new(
         window: Arc<Window>,
         device: &wgpu::Device,
@@ -35,7 +619,137 @@ impl ModelLoader {
         let mut src = BufReader::new(Cursor::new(src));
 
         let gltf = Gltf::parse(&mut src)?;
-        let scene = Scene::new(device, queue, &gltf)?;
+        let scene = Scene::from_gltf(&gltf)?;
+
+        let views: Vec<wgpu::TextureView> = scene
+            .textures
+            .iter()
+            .map(|tex| {
+                let (width, height) = tex.dimensions();
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &tex,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * width),
+                        rows_per_image: Some(height),
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    ..Default::default()
+                });
+
+                view
+            })
+            .collect();
+
+        let mesh_buffers: Vec<MeshBuffers> = scene
+            .meshes
+            .iter()
+            .map(|mesh| {
+                let primitive_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("primitive data"),
+                        contents: bytemuck::cast_slice(
+                            &mesh
+                                .primitives
+                                .iter()
+                                .map(|primitive| PrimitiveData {
+                                    min: primitive.min.to_array(),
+                                    _pad: 0.0,
+                                    max: primitive.max.to_array(),
+                                    material_id: primitive.material_id,
+                                })
+                                .collect::<Vec<PrimitiveData>>(),
+                        ),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                let primitives = mesh
+                    .primitives
+                    .iter()
+                    .map(|p| {
+                        let index_buffer =
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("index buffer"),
+                                contents: &gltf.bin[p.indices.start..p.indices.end],
+                                usage: wgpu::BufferUsages::INDEX,
+                            });
+
+                        let position_buffer =
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("vertex position buffer"),
+                                contents: &gltf.bin[p.positions.start..p.positions.end],
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+
+                        let normal_buffer =
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("vertex normals buffer"),
+                                contents: &gltf.bin[p.normals.start..p.normals.end],
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+
+                        let tangent_buffer =
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("vertex tangent buffer"),
+                                contents: &gltf.bin[p.tangents.start..p.tangents.end],
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+
+                        let uv_buffer =
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("tex coord buffer"),
+                                contents: &gltf.bin[p.uv.start..p.uv.end],
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+
+                        PrimitiveBuffers {
+                            index_buffer,
+                            position_buffer,
+                            normal_buffer,
+                            tangent_buffer,
+                            uv_buffer,
+                            index_format: match p.indices.component_type {
+                                models::schema::ComponentType::UnsignedShort => {
+                                    wgpu::IndexFormat::Uint16
+                                }
+                                _ => wgpu::IndexFormat::Uint32,
+                            },
+                            index_count: p.indices.count,
+                        }
+                    })
+                    .collect();
+
+                MeshBuffers {
+                    primitive_buffer,
+                    primitives,
+                }
+            })
+            .collect();
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -87,7 +801,7 @@ impl ModelLoader {
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
-                        count: std::num::NonZeroU32::new(scene.views.len() as u32),
+                        count: std::num::NonZeroU32::new(views.len() as u32),
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
@@ -288,7 +1002,7 @@ impl ModelLoader {
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureViewArray(
-                        &scene.views.iter().collect::<Vec<&wgpu::TextureView>>(),
+                        &views.iter().collect::<Vec<&wgpu::TextureView>>(),
                     ),
                 },
                 wgpu::BindGroupEntry {
@@ -306,6 +1020,7 @@ impl ModelLoader {
 
         Ok(Self {
             scene,
+            mesh_buffers,
             pipeline,
             bg_camera,
             bg_model,
@@ -361,14 +1076,14 @@ impl ModelLoader {
             pass.set_bind_group(2, &self.bg_scene_textures, &[]);
 
             for (i, node) in self.scene.nodes.iter().enumerate() {
-                let Some(mesh) = self.scene.meshes.get(node.mesh_id) else {
+                let Some(mesh_buffers) = self.mesh_buffers.get(node.mesh_id) else {
                     continue;
                 };
                 pass.set_bind_group(1, &self.bg_model, &[256 * i as u32]);
-                pass.set_vertex_buffer(4, mesh.primitive_buffer.slice(..));
-                pass.set_vertex_buffer(5, mesh.primitive_buffer.slice(..));
-                pass.set_vertex_buffer(6, mesh.primitive_buffer.slice(..));
-                for (j, primitive) in mesh.primitives.iter().enumerate() {
+                pass.set_vertex_buffer(4, mesh_buffers.primitive_buffer.slice(..));
+                pass.set_vertex_buffer(5, mesh_buffers.primitive_buffer.slice(..));
+                pass.set_vertex_buffer(6, mesh_buffers.primitive_buffer.slice(..));
+                for (j, primitive) in mesh_buffers.primitives.iter().enumerate() {
                     pass.set_index_buffer(primitive.index_buffer.slice(..), primitive.index_format);
                     pass.set_vertex_buffer(0, primitive.position_buffer.slice(..));
                     pass.set_vertex_buffer(1, primitive.normal_buffer.slice(..));
@@ -409,6 +1124,22 @@ impl ModelLoader {
     }
 }
 
+#[derive(Debug)]
+struct MeshBuffers {
+    primitive_buffer: wgpu::Buffer,
+    primitives: Vec<PrimitiveBuffers>,
+}
+#[derive(Debug)]
+struct PrimitiveBuffers {
+    index_buffer: wgpu::Buffer,
+    index_format: wgpu::IndexFormat,
+    index_count: u32,
+    position_buffer: wgpu::Buffer,
+    normal_buffer: wgpu::Buffer,
+    tangent_buffer: wgpu::Buffer,
+    uv_buffer: wgpu::Buffer,
+}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct ModelData {
@@ -436,516 +1167,4 @@ struct MaterialData {
     albedo_index: i32,
     normal_index: i32,
     _pad: [f32; 3],
-}
-
-/// Parsed scene data
-#[derive(Debug)]
-struct Scene {
-    nodes: Vec<Node>,
-    meshes: Vec<Mesh>,
-    materials: Vec<Material>,
-    views: Vec<wgpu::TextureView>,
-}
-
-#[derive(Debug)]
-struct Material {
-    base_albedo: glam::Vec4,
-    metallic: f32,
-    roughness: f32,
-    normal_scale: f32,
-    albedo_index: i32,
-    normal_index: i32,
-}
-
-#[derive(Debug)]
-struct Node {
-    mesh_id: usize,
-    transform: glam::Mat4,
-}
-
-#[derive(Debug)]
-struct Mesh {
-    primitive_buffer: wgpu::Buffer,
-    primitives: Vec<Primitive>,
-}
-
-#[derive(Debug)]
-struct Primitive {
-    index_buffer: wgpu::Buffer,
-    index_format: wgpu::IndexFormat,
-    index_count: u32,
-    position_buffer: wgpu::Buffer,
-    normal_buffer: wgpu::Buffer,
-    tangent_buffer: wgpu::Buffer,
-    uv_buffer: wgpu::Buffer,
-    material_id: u32,
-    min: glam::Vec3,
-    max: glam::Vec3,
-}
-
-impl Scene {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, gltf: &Gltf) -> Result<Self> {
-        let mut views = Vec::new();
-        let mut img_index_map = HashMap::new();
-        for (i, img) in gltf.meta.images.iter().enumerate() {
-            let label = format!("img_{}_{}", i, img.name.as_deref().unwrap_or(""));
-
-            match wgpu::Texture::from_gltf(device, queue, &gltf, img, &label) {
-                Ok(texture) => {
-                    img_index_map.insert(i as u32, views.len());
-                    views.push(texture.create_view(&Default::default()));
-                }
-                Err(err) => {
-                    eprintln!("error loading image {} - {}", &label, err);
-                }
-            }
-        }
-
-        let materials = (&gltf.meta.materials)
-            .iter()
-            .map(|m| Material::from_gltf(&gltf, &img_index_map, m))
-            .collect::<Vec<Material>>();
-
-        let mut meshes = Vec::new();
-        let mut nodes = Vec::new();
-        let scene = gltf
-            .meta
-            .scenes
-            .get(gltf.meta.scene.context("no default scene")? as usize)
-            .context("unable to find default scene")?;
-
-        let mut visit_queue = VecDeque::new();
-        for node in &scene.nodes {
-            visit_queue.push_back((*node, models::GLTF_Y_UP_TO_Z_UP));
-        }
-
-        let mut mesh_id_map = HashMap::new();
-        // visit breadth first over the scene, flattening the matrix transform
-        while let Some((node_id, parent_matrix)) = visit_queue.pop_front() {
-            let node = gltf
-                .meta
-                .nodes
-                .get(node_id as usize)
-                .context(format!("unable to find node with id {}", node_id))?;
-            let transform = parent_matrix * node.transform.matrix;
-
-            // add children to visit
-            for child_id in &node.children {
-                visit_queue.push_back((*child_id, transform));
-            }
-
-            let Some(gltf_mesh_id) = node.mesh else {
-                continue;
-            };
-            // current node has a mesh attached
-            // our final node list is flat and only has ones with meshes
-            let mesh_id = match mesh_id_map.get(&gltf_mesh_id) {
-                Some(id) => anyhow::Ok(*id),
-                None => {
-                    // now, create and push a new mesh
-                    let gltf_mesh = gltf
-                        .meta
-                        .meshes
-                        .get(gltf_mesh_id as usize)
-                        .context("invalid mesh id")?;
-                    let primitives = gltf_mesh
-                        .primitives
-                        .iter()
-                        .filter_map(|p| {
-                            Primitive::from_gltf(device, gltf, p)
-                                .inspect_err(|err| eprintln!("error loading primitive: {:#?}", err))
-                                .ok()
-                        })
-                        .collect::<Vec<Primitive>>();
-
-                    let primitive_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("primitive data"),
-                            contents: bytemuck::cast_slice(
-                                &primitives
-                                    .iter()
-                                    .map(|primitive| PrimitiveData {
-                                        min: primitive.min.to_array(),
-                                        _pad: 0.0,
-                                        max: primitive.max.to_array(),
-                                        material_id: primitive.material_id,
-                                    })
-                                    .collect::<Vec<PrimitiveData>>(),
-                            ),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
-
-                    mesh_id_map.insert(gltf_mesh_id, meshes.len());
-                    meshes.push(Mesh {
-                        primitives,
-                        primitive_buffer,
-                    });
-                    Ok(meshes.len() - 1)
-                }
-            }?;
-
-            nodes.push(Node { mesh_id, transform });
-        }
-
-        Ok(Self {
-            nodes,
-            meshes,
-            views,
-            materials,
-        })
-    }
-}
-
-trait TextureExt {
-    fn from_gltf(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        gltf: &Gltf,
-        img: &models::schema::Image,
-        label: &str,
-    ) -> Result<wgpu::Texture>;
-}
-impl TextureExt for wgpu::Texture {
-    fn from_gltf(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        gltf: &Gltf,
-        img: &models::schema::Image,
-        label: &str,
-    ) -> Result<Self> {
-        let buf_view_index = img
-            .buffer_view
-            .context("no buffer view for image. TODO: load image uri's")?;
-        let buf_view = gltf
-            .meta
-            .buffer_views
-            .get(buf_view_index as usize)
-            .context("unable to find buffer view")?;
-
-        let src = &gltf.bin[(buf_view.byte_offset as usize)
-            ..(buf_view.byte_offset as usize + buf_view.byte_length as usize)];
-
-        let loaded = match img.mime_type {
-            Some(models::schema::MimeType::Jpeg) => {
-                image::load_from_memory_with_format(src, image::ImageFormat::Jpeg)
-            }
-            Some(models::schema::MimeType::Png) => {
-                image::load_from_memory_with_format(src, image::ImageFormat::Png)
-            }
-            _ => image::load_from_memory(src),
-        }?;
-
-        let dimensions = loaded.dimensions();
-        let rgba = loaded.to_rgba8();
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(&label),
-            size: wgpu::Extent3d {
-                width: dimensions.0,
-                height: dimensions.1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * dimensions.0),
-                rows_per_image: Some(dimensions.1),
-            },
-            wgpu::Extent3d {
-                width: dimensions.0,
-                height: dimensions.1,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        Ok(texture)
-    }
-}
-
-impl Material {
-    fn from_gltf(
-        gltf: &Gltf,
-        img_index_map: &HashMap<u32, usize>,
-        m: &models::schema::Material,
-    ) -> Self {
-        let albedo_index = m
-            .pbr_metallic_roughness
-            .as_ref()
-            .and_then(|pbr| (&pbr.base_color_texture).as_ref())
-            .and_then(|info| gltf.meta.textures.get(info.index as usize))
-            .and_then(|tex| tex.source)
-            .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
-            .unwrap_or(-1);
-        let normal_index = (&m.normal_texture)
-            .as_ref()
-            .and_then(|info| gltf.meta.textures.get(info.index as usize))
-            .and_then(|tex| tex.source)
-            .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
-            .unwrap_or(-1);
-
-        let (base_albedo, roughness, metallic) = (&m.pbr_metallic_roughness)
-            .as_ref()
-            .map(|pbr| {
-                (
-                    pbr.base_color_factor,
-                    pbr.roughness_factor,
-                    pbr.metallic_factor,
-                )
-            })
-            .unwrap_or((glam::Vec4::ZERO, 0.5, 0.0));
-
-        let normal_scale = (&m.normal_texture).as_ref().map(|n| n.scale).unwrap_or(0.0);
-
-        Self {
-            base_albedo,
-            roughness,
-            metallic,
-            normal_scale,
-            albedo_index,
-            normal_index,
-        }
-    }
-}
-
-impl Primitive {
-    fn from_gltf(
-        device: &wgpu::Device,
-        gltf: &Gltf,
-        p: &models::schema::Primitive,
-    ) -> Result<Self> {
-        ensure!(
-            p.mode == models::schema::DrawMode::Triangles,
-            "only DrawMode::Triangles is supported. TODO: add others"
-        );
-        let material_id = p.material.context("primitive has no material ID")?;
-
-        struct PrimitiveBufferDescriptor<'a> {
-            accessor: &'a models::schema::Accessor,
-            data: &'a [u8],
-        }
-        // walks gltf and finds accessor, buffer view, buffer
-        let get_buf_descriptor =
-            |acc_index: u32,
-             cmp_type: Option<models::schema::ComponentType>,
-             acc_type: Option<models::schema::AccessorType>| {
-                let accessor = gltf
-                    .meta
-                    .accessors
-                    .get(acc_index as usize)
-                    .context("accessor not found")?;
-                let view = accessor
-                    .buffer_view
-                    .context("no buffer view specified")
-                    .and_then(|index| {
-                        gltf.meta
-                            .buffer_views
-                            .get(index as usize)
-                            .context("no buffer view found")
-                    })?;
-                let buffer = gltf
-                    .meta
-                    .buffers
-                    .get(view.buffer as usize)
-                    .context("no buffer source found")?;
-                ensure!(
-                    buffer.uri.is_none(),
-                    "buffer has external source. TODO: support this"
-                );
-                ensure!(
-                    cmp_type
-                        .as_ref()
-                        .is_none_or(|ty| *ty == accessor.component_type),
-                    format!(
-                        "component type mismatch. expected {:?}, received {:?}",
-                        cmp_type.unwrap(),
-                        accessor.component_type
-                    )
-                );
-                ensure!(
-                    acc_type.as_ref().is_none_or(|ty| *ty == accessor.ty),
-                    format!(
-                        "accessor type mismatch. expected {:?}, received {:?}",
-                        acc_type.unwrap(),
-                        accessor.ty,
-                    )
-                );
-                let mut component_length = match accessor.component_type {
-                    models::schema::ComponentType::Byte
-                    | models::schema::ComponentType::UnsignedByte => 1,
-                    models::schema::ComponentType::Short
-                    | models::schema::ComponentType::UnsignedShort => 2,
-                    models::schema::ComponentType::UnsignedInt
-                    | models::schema::ComponentType::Float => 4,
-                    models::schema::ComponentType::Other(_) => bail!("invalid component type"),
-                };
-                component_length *= match accessor.ty {
-                    models::schema::AccessorType::Scalar => 1,
-                    models::schema::AccessorType::Vec2 => 2,
-                    models::schema::AccessorType::Vec3 => 3,
-                    models::schema::AccessorType::Vec4 => 4,
-                    models::schema::AccessorType::Mat2 => 4,
-                    models::schema::AccessorType::Mat3 => 9,
-                    models::schema::AccessorType::Mat4 => 16,
-                    models::schema::AccessorType::Other(_) => {
-                        bail!("invalid accessor element type")
-                    }
-                };
-                let start = (view.byte_offset + accessor.byte_offset.unwrap_or(0)) as usize;
-                let end = start + (component_length * accessor.count) as usize;
-                if start >= buffer.byte_length as usize || end >= buffer.byte_length as usize {
-                    bail!("accessor view extends beyond buffer's bounds");
-                }
-                Ok(PrimitiveBufferDescriptor {
-                    accessor,
-                    data: &gltf.bin[start..end],
-                })
-            };
-
-        let indices = p
-            .indices
-            .context("no index buffer. TODO: add support for direct vertex lists")
-            .and_then(|i| {
-                get_buf_descriptor(i, None, Some(models::schema::AccessorType::Scalar))
-                    .context("index buffer")
-            })?;
-        let index_format = match indices.accessor.component_type {
-            models::schema::ComponentType::UnsignedShort => wgpu::IndexFormat::Uint16,
-            models::schema::ComponentType::UnsignedInt => wgpu::IndexFormat::Uint32,
-            _ => {
-                bail!("index format must be be either u16 or u32");
-            }
-        };
-
-        let positions = p
-            .attributes
-            .get("POSITION")
-            .context("no attribute")
-            .and_then(|i| {
-                get_buf_descriptor(
-                    *i,
-                    Some(models::schema::ComponentType::Float),
-                    Some(models::schema::AccessorType::Vec3),
-                )
-            })
-            .context("vertex position buffer")?;
-
-        let normals = p
-            .attributes
-            .get("NORMAL")
-            .context("attribute not defined. TODO: add support for this")
-            .and_then(|i| {
-                get_buf_descriptor(
-                    *i,
-                    Some(models::schema::ComponentType::Float),
-                    Some(models::schema::AccessorType::Vec3),
-                )
-            })
-            .context("vertex normal buffer")?;
-
-        let tangents = p
-            .attributes
-            .get("TANGENT")
-            .context("attribute not defined. TODO: add support for this")
-            .and_then(|i| {
-                get_buf_descriptor(
-                    *i,
-                    Some(models::schema::ComponentType::Float),
-                    Some(models::schema::AccessorType::Vec4),
-                )
-            })
-            .context("vertex tangent buffer")?;
-
-        let uv = p
-            .attributes
-            .get("TEXCOORD_0")
-            .context("attribute not defined. TODO: add support for this")
-            .and_then(|i| {
-                get_buf_descriptor(
-                    *i,
-                    Some(models::schema::ComponentType::Float),
-                    Some(models::schema::AccessorType::Vec2),
-                )
-            })
-            .context("vertex coordinate buffer")?;
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("index buffer"),
-            contents: indices.data,
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let position_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertex position buffer"),
-            contents: positions.data,
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let normal_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertex normals buffer"),
-            contents: normals.data,
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let tangent_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertex tangent buffer"),
-            contents: tangents.data,
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let uv_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("tex coord buffer"),
-            contents: uv.data,
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let min = &positions
-            .accessor
-            .min
-            .as_ref()
-            .context("position attribute is missing minimum bounds")?;
-        let max = &positions
-            .accessor
-            .max
-            .as_ref()
-            .context("position attribute is missing maximum bounds")?;
-        let [min, max] = [min, max].map(|bd| {
-            glam::Vec3::from_slice(
-                &bd[..3]
-                    .iter()
-                    .map(|x| match x {
-                        models::schema::GltfNumber::Float(x) => *x as f32,
-                        _ => 0.0,
-                    })
-                    .collect::<Vec<f32>>(),
-            )
-        });
-
-        Ok(Primitive {
-            index_buffer,
-            index_format,
-            index_count: indices.accessor.count,
-            position_buffer,
-            normal_buffer,
-            tangent_buffer,
-            uv_buffer,
-            material_id,
-            min,
-            max,
-        })
-    }
 }

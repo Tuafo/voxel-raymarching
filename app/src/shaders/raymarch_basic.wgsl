@@ -1,22 +1,7 @@
-struct SceneData {
-    _size: vec3<u32>,
-    size: vec3<u32>,
-    palette: array<vec4<u32>, 64>
-}
-struct Chunk {
-    brick_index: u32,
-    mask: array<u32, 16>,
-}
-struct Brick {
-    data: array<u32, 128>,
-}
 @group(0) @binding(0) var out_albedo: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var out_normal: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var out_depth: texture_storage_2d<r32float, write>;
-@group(0) @binding(3) var<uniform> scene: SceneData;
-@group(0) @binding(4) var<storage, read> chunk_indices: array<u32>;
-@group(0) @binding(5) var<storage, read> chunks: array<Chunk>;
-@group(0) @binding(6) var<storage, read> bricks: array<Brick>;
+@group(0) @binding(3) var voxels: texture_storage_3d<rgba8unorm, read>;
 
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -53,8 +38,8 @@ fn compute_main(in: ComputeIn) {
     var normal = vec3(0.0);
     var depth = 0.0;
 
-    if res.material_id > 0u {
-        albedo = palette_color(res.material_id).xyz;
+    if res.hit {
+        albedo = res.albedo;
         normal = normalize(model.normal_transform * res.normal);
 
         depth = res.distance * dot(ray.direction, camera.forward);
@@ -73,16 +58,6 @@ fn compute_main(in: ComputeIn) {
     textureStore(out_depth, vec2<i32>(in.id.xy), vec4(depth, 0.0, 0.0, 1.0));
 }
 
-fn palette_color(index: u32) -> vec4<f32> {
-    let rgba = scene.palette[index >> 2u][index & 3u];
-    return vec4<f32>(
-        f32((rgba >> 24u) & 0xFFu) / 255.0,
-        f32((rgba >> 16u) & 0xFFu) / 255.0,
-        f32((rgba >> 8u) & 0xFFu) / 255.0,
-        f32(rgba & 0xFFu) / 255.0
-    );
-}
-
 struct Ray {
     origin: vec3<f32>,
     direction: vec3<f32>,
@@ -91,7 +66,8 @@ struct Ray {
 }
 
 struct RaymarchResult {
-    material_id: u32,
+    hit: bool,
+    albedo: vec3<f32>,
     normal: vec3<f32>,
     distance: f32,
 }
@@ -101,53 +77,27 @@ fn raymarch(ray: Ray) -> RaymarchResult {
         return RaymarchResult();
     }
 
-    let origin = ray.origin / 8.0;
+    let size = textureDimensions(voxels);
+
+    let origin = ray.origin;
     let dir = ray.direction;
 
     let step = vec3<i32>(sign(dir));
     let ray_delta = vec3(1.0) / max(vec3(1e-7), abs(dir));
-    // let ray_delta = vec3(1.0) / abs(dir);
 
     var pos = vec3<i32>(floor(origin));
     var ray_length = ray_delta * (sign(dir) * (vec3<f32>(pos) - origin) + (sign(dir) * 0.5) + 0.5);
     var prev_ray_length = vec3<f32>(0.0);
     var mask = vec3(false);
 
-    for (var i = 0u; i < DDA_MAX_STEPS && all(pos < vec3<i32>(scene.size)) && all(pos >= vec3(0)); i++) {
+    for (var i = 0u; i < DDA_MAX_STEPS && all(pos < vec3<i32>(size)) && all(pos >= vec3(0)); i++) {
+        let voxel = textureLoad(voxels, pos).xyz;
 
-        let chunk_pos_index = u32(pos.x) * scene.size.y * scene.size.z + u32(pos.y) * scene.size.z + u32(pos.z);
-        let chunk_index = chunk_indices[chunk_pos_index];
-
-        if chunk_index != 0u {
-            // now we do dda within the brick
-            var chunk = chunks[chunk_index - 1u];
-
+        if all(voxel > vec3(0.001)) {
+            let normal = -vec3<f32>(sign(dir)) * vec3<f32>(mask);
             let t_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
-            let brick_origin = clamp((origin - vec3<f32>(pos) + dir * (t_entry + 1e-6)) * 8.0, vec3(1e-6), vec3(8.0 - 1e-6));
-
-            var brick_pos = vec3<i32>(floor(brick_origin));
-            var brick_ray_length = ray_delta * (sign(dir) * (floor(brick_origin) - brick_origin) + (sign(dir) * 0.5) + 0.5);
-
-            prev_ray_length = vec3<f32>(0.0);
-
-            while all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)) {
-                let voxel_index = (brick_pos.x << 6u) | (brick_pos.y << 3u) | brick_pos.z;
-                if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
-                    let voxel = (bricks[chunk.brick_index - 1u].data[voxel_index >> 2u] >> ((u32(voxel_index) & 3u) << 3u)) & 0xFFu;
-
-                    let normal = -vec3<f32>(sign(dir)) * vec3<f32>(mask);
-
-                    let t_total = ray.t_start + t_entry * 8.0 + min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
-
-                    return RaymarchResult(voxel, normal, t_total);
-                }
-
-                prev_ray_length = brick_ray_length;
-
-                mask = step_mask(brick_ray_length);
-                brick_ray_length += vec3<f32>(mask) * ray_delta;
-                brick_pos += vec3<i32>(mask) * step;
-            }
+            let t_total = t_entry + ray.t_start;
+            return RaymarchResult(true, voxel, normal, t_total);
         }
 
         prev_ray_length = ray_length;
@@ -186,12 +136,12 @@ fn start_ray(pos: vec2<u32>) -> Ray {
     let ws_origin = vp_origin + (uv.x * vp_size.x * right) + (uv.y * vp_size.y * up);
     let ws_direction = normalize(ws_origin - camera.ws_position);
 
-    let ls_origin = ws_origin * 8.0;
+    let ls_origin = ws_origin * 20.0;
     let ls_direction = ws_direction;
 
     // aabb simple test and project on the scene volume
     let bd_min = vec3<f32>(0.0);
-    let bd_max = vec3<f32>(scene.size * 8u);
+    let bd_max = vec3<f32>(textureDimensions(voxels).xyz);
 
     // let inv_dir = 1.0 / safe_vec3(ls_direction);
     let inv_dir = safe_inverse(ls_direction);

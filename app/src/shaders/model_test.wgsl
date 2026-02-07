@@ -64,9 +64,9 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let material = materials[in.material_id];
 
-    var albedo = in.vertex_color;
+    var albedo = in.vertex_color * 0.000001;
     if material.albedo_index >= 0 {
-        albedo += textureSample(textures[material.albedo_index], tex_sampler, in.uv).rgb * 0.01;
+        albedo += textureSample(textures[material.albedo_index], tex_sampler, in.uv).rgb;
     }
 
     var ws_normal = normalize(in.vertex_normal);

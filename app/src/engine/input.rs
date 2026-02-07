@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use glam::{DVec2, Vec2};
+use glam::DVec2;
 use winit::{
     event::{DeviceEvent, ElementState, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},

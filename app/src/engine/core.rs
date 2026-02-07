@@ -36,7 +36,7 @@ impl Engine {
             let src = std::include_bytes!("../../assets/sponza.vox");
             Scene::load(src).unwrap()
         };
-        println!("scene load: {:?}", start.elapsed());
+        // println!("scene load: {:?}", start.elapsed());
 
         let model = Model::new();
 
