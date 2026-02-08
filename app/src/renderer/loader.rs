@@ -1,50 +1,36 @@
-use std::{
-    io::{BufRead, BufReader, Cursor, Seek},
-    sync::Arc,
-};
+use std::io::{BufRead, Seek};
 
 use anyhow::Result;
 use models::{Gltf, Scene};
 use wgpu::util::DeviceExt;
-use winit::window::Window;
-
-use crate::{RendererCtx, SizedWindow, engine::Engine, renderer::buffers::CameraDataBuffer};
 
 const VOXELS_PER_UNIT: u32 = 15;
 
 pub struct VoxelizeResult {
-    pub texture: wgpu::Texture,
     pub scene: Scene,
     pub size: glam::IVec3,
     pub brickmap: BrickmapData,
+    pub palette: wgpu::Buffer,
     pub chunk_count: glam::UVec3,
 }
 
 pub struct Voxelizer {
     pipelines: Pipelines,
     bg_layouts: BindGroupLayouts,
-    // size: glam::UVec3,
-    // size_chunks: glam::UVec3,
 }
 struct Pipelines {
     voxelize: wgpu::ComputePipeline,
-    // palette_lut: wgpu::ComputePipeline,
+    // palette: wgpu::ComputePipeline,
     tree: wgpu::ComputePipeline,
 }
 struct BindGroupLayouts {
     voxelize_shared: wgpu::BindGroupLayout,
     voxelize_scene_textures: wgpu::BindGroupLayout,
     voxelize_per_primitive: wgpu::BindGroupLayout,
+    palette: wgpu::BindGroupLayout,
     tree_data: wgpu::BindGroupLayout,
     tree_alloc_texture: wgpu::BindGroupLayout,
 }
-// struct BindGroups {
-//     voxelize_shared: wgpu::BindGroup,
-//     voxelize_scene_textures: wgpu::BindGroup,
-//     voxelize_per_primitive: Vec<PrimitiveGroup>,
-//     tree_data: wgpu::BindGroup,
-//     tree_alloc_texture: wgpu::BindGroup,
-// }
 
 impl Voxelizer {
     pub fn new(device: &wgpu::Device, scene_tex_count: u32) -> Self {
@@ -86,7 +72,7 @@ impl Voxelizer {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            format: wgpu::TextureFormat::Rg32Uint,
                             view_dimension: wgpu::TextureViewDimension::D3,
                         },
                         count: None,
@@ -176,6 +162,31 @@ impl Voxelizer {
                     ],
                 },
             ),
+            palette: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("palette data layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // wgpu::BindGroupLayoutEntry {
+                    //     binding: 1,
+                    //     visibility: wgpu::ShaderStages::COMPUTE,
+                    //     ty: wgpu::BindingType::StorageTexture {
+                    //         access: wgpu::StorageTextureAccess::WriteOnly,
+                    //         format: wgpu::TextureFormat::Rg32Uint,
+                    //         view_dimension: wgpu::TextureViewDimension::D3,
+                    //     },
+                    //     count: None,
+                    // },
+                ],
+            }),
             tree_data: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("voxel brickmap data layout"),
                 entries: &[
@@ -229,11 +240,31 @@ impl Voxelizer {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            format: wgpu::TextureFormat::Rg32Uint,
                             view_dimension: wgpu::TextureViewDimension::D3,
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // wgpu::BindGroupLayoutEntry {
+                    //     binding: 5,
+                    //     visibility: wgpu::ShaderStages::COMPUTE,
+                    //     ty: wgpu::BindingType::StorageTexture {
+                    //         access: wgpu::StorageTextureAccess::ReadOnly,
+                    //         format: wgpu::TextureFormat::Rg32Uint,
+                    //         view_dimension: wgpu::TextureViewDimension::D3,
+                    //     },
+                    //     count: None,
+                    // },
                 ],
             }),
         };
@@ -261,6 +292,25 @@ impl Voxelizer {
                 compilation_options: Default::default(),
                 cache: None,
             }),
+            // palette: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            //     label: Some("palette LUT generation"),
+            //     layout: Some(
+            //         &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            //             label: Some("palette LUT generation layout"),
+            //             bind_group_layouts: &[&bg_layouts.palette],
+            //             immediate_size: 0,
+            //         }),
+            //     ),
+            //     module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            //         label: Some("palette LUT generation"),
+            //         source: wgpu::ShaderSource::Wgsl(
+            //             std::include_str!("../shaders/palette_lut.wgsl").into(),
+            //         ),
+            //     }),
+            //     entry_point: Some("compute_main"),
+            //     compilation_options: Default::default(),
+            //     cache: None,
+            // }),
             tree: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("voxel packing pipeline"),
                 layout: Some(
@@ -292,13 +342,13 @@ impl Voxelizer {
     }
 
     pub fn load_gltf<R: BufRead + Seek>(
-        &mut self,
         src: &mut R,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Result<VoxelizeResult> {
         let gltf = Gltf::parse(src)?;
         let scene = Scene::from_gltf(&gltf)?;
+        let voxelizer = Self::new(device, scene.textures.len() as u32);
 
         let base_unscaled = scene.min.floor().as_ivec3();
         let size_unscaled = (scene.max.ceil() - scene.min.floor()).ceil().as_ivec3();
@@ -316,14 +366,14 @@ impl Voxelizer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::Rg32Uint,
             usage: wgpu::TextureUsages::STORAGE_BINDING,
             view_formats: &[],
         });
 
         let mut state = VoxelizerState {
-            gltf,
-            scene,
+            gltf: &gltf,
+            scene: &scene,
             base_unscaled,
             size_unscaled,
             size_scaled,
@@ -332,18 +382,27 @@ impl Voxelizer {
         };
 
         let mut encoder = device.create_command_encoder(&Default::default());
-        self.voxelize(&mut state, device, queue, &mut encoder);
-        let brickmap = self.build_tree(&mut state, device, queue, &mut encoder);
+        let palette = voxelizer.build_palette(&mut state, device, queue, &mut encoder);
+        voxelizer.voxelize(&state, &palette, device, queue, &mut encoder);
+        let brickmap = voxelizer.build_tree(&mut state, &palette, device, &mut encoder);
 
         queue.submit([encoder.finish()]);
 
-        Ok(VoxelizeResult { texture: state.voxels, scene, size: state., brickmap, chunk_count: () })
+        let size = state.size_scaled.as_ivec3();
+        let chunk_count = state.size_chunks;
+        Ok(VoxelizeResult {
+            scene,
+            size,
+            brickmap,
+            chunk_count,
+            palette: palette.buffer_palette,
+        })
     }
 }
 
-struct VoxelizerState {
-    gltf: Gltf,
-    scene: Scene,
+struct VoxelizerState<'a> {
+    gltf: &'a Gltf,
+    scene: &'a Scene,
     base_unscaled: glam::IVec3,
     size_unscaled: glam::IVec3,
     size_scaled: glam::UVec3,
@@ -357,10 +416,16 @@ pub struct BrickmapData {
     pub bricks: wgpu::Buffer,
 }
 
+struct PaletteData {
+    buffer_palette: wgpu::Buffer,
+    // tex_palette_lut: wgpu::Texture,
+}
+
 impl Voxelizer {
     fn voxelize(
         &self,
         state: &VoxelizerState,
+        palette: &PaletteData,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
@@ -654,11 +719,99 @@ impl Voxelizer {
         }
     }
 
-    fn build_tree(
+    fn build_palette(
         &self,
         state: &VoxelizerState,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> PaletteData {
+        // create the palette bind group
+        // palette is just hand-generated for now, should do some cool generation in a previous compute stage in the future
+        // that's based on the actual albedo distribution in the gltf
+        let mut palette = vec![0];
+        for r in 0..6u32 {
+            for g in 0..6u32 {
+                for b in 0..6u32 {
+                    let r8 = (r * 255 / 5) & 0xff;
+                    let g8 = (g * 255 / 5) & 0xff;
+                    let b8 = (b * 255 / 5) & 0xff;
+                    let packed = (r8 << 24) | (g8 << 16) | (b8 << 8) | 0xff;
+                    palette.push(packed);
+                }
+            }
+        }
+        for i in 0..39u32 {
+            let v = (i * 255 / 38) & 0xff;
+            let packed = (v << 24) | (v << 16) | (v << 8) | 0xff;
+            palette.push(packed);
+        }
+
+        let buffer_palette = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("palette colors"),
+            contents: bytemuck::cast_slice(&palette),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // let tex_palette_lut = device.create_texture(&wgpu::TextureDescriptor {
+        //     label: Some("palette LUT"),
+        //     size: wgpu::Extent3d {
+        //         width: 32,
+        //         height: 32,
+        //         depth_or_array_layers: 32,
+        //     },
+        //     mip_level_count: 1,
+        //     sample_count: 1,
+        //     dimension: wgpu::TextureDimension::D3,
+        //     format: wgpu::TextureFormat::R32Uint,
+        //     usage: wgpu::TextureUsages::STORAGE_BINDING,
+        //     view_formats: &[],
+        // });
+
+        // let bg_palette = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        //     label: Some("palette bin group"),
+        //     layout: &self.bg_layouts.palette,
+        //     entries: &[
+        //         wgpu::BindGroupEntry {
+        //             binding: 0,
+        //             resource: buffer_palette.as_entire_binding(),
+        //         },
+        //         // wgpu::BindGroupEntry {
+        //         //     binding: 1,
+        //         //     resource: wgpu::BindingResource::TextureView(&tex_palette_lut.create_view(
+        //         //         &wgpu::TextureViewDescriptor {
+        //         //             label: Some("palette LUT view"),
+        //         //             usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+        //         //             ..Default::default()
+        //         //         },
+        //         //     )),
+        //         // },
+        //     ],
+        // });
+        // {
+        //     let descriptor = wgpu::ComputePassDescriptor {
+        //         label: Some("palette LUT generation pass"),
+        //         timestamp_writes: None,
+        //     };
+        //     let mut pass = encoder.begin_compute_pass(&descriptor);
+
+        //     pass.set_pipeline(&self.pipelines.palette);
+        //     pass.set_bind_group(0, Some(&bg_palette), &[]);
+
+        //     pass.dispatch_workgroups(8, 8, 8);
+        // }
+
+        PaletteData {
+            buffer_palette,
+            // tex_palette_lut,
+        }
+    }
+
+    fn build_tree(
+        &self,
+        state: &VoxelizerState,
+        palette: &PaletteData,
+        device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
     ) -> BrickmapData {
         // create tree data bind group
@@ -725,6 +878,10 @@ impl Voxelizer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&view_voxels),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: palette.buffer_palette.as_entire_binding(),
                 },
             ],
         });

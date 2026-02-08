@@ -1,9 +1,13 @@
-use std::{f32, sync::Arc, time::Duration};
+use std::{
+    f32,
+    io::{BufReader, Cursor},
+    sync::Arc,
+    time::Duration,
+};
 
-use glam::UVec2;
 use wgpu::{
     BindGroup, BindGroupLayout, Buffer, ComputePipeline, Device, PipelineLayout, RenderPipeline,
-    Sampler, Texture, TextureView, util::DeviceExt,
+    Texture, util::DeviceExt,
 };
 use winit::window::Window;
 
@@ -12,12 +16,11 @@ use crate::{
     engine::Engine,
     renderer::{
         buffers::{CameraDataBuffer, ModelDataBuffer, SceneDataBuffer},
-        loader::voxelize,
+        loader::Voxelizer,
         quad::Quad,
     },
     ui::{Ui, UiCtx},
 };
-use vox::tree::VoxelTree;
 
 pub struct RendererCtx<'a> {
     pub window: &'a winit::window::Window,
@@ -33,12 +36,9 @@ pub struct Renderer {
     textures: Textures,
     uniforms: Uniforms,
     pipelines: Pipelines,
-    // pipeline_layouts: PipelineLayouts,
     bind_groups: BindGroups,
-    // bg_layouts: BindGroupLayouts,
     timing: Option<RenderTimer>,
     quad: Quad,
-    raw_voxels_view: wgpu::TextureView,
 }
 
 struct Uniforms {
@@ -46,6 +46,7 @@ struct Uniforms {
     voxel_chunk_index: Buffer,
     voxel_chunks: Buffer,
     voxel_bricks: Buffer,
+    voxel_palette: Buffer,
     camera: Buffer,
     camera_data: CameraDataBuffer,
     model: Buffer,
@@ -61,7 +62,6 @@ struct PipelineLayouts {
 
 struct Pipelines {
     raymarch: ComputePipeline,
-    raymarch_basic: ComputePipeline,
     normal_blur: ComputePipeline,
     deferred: ComputePipeline,
     post_fx: RenderPipeline,
@@ -78,14 +78,11 @@ struct BindGroupLayouts {
 
 struct BindGroups {
     raymarch: Option<BindGroup>,
-    raymarch_basic: Option<BindGroup>,
     normal_blur: Option<BindGroup>,
     deferred: Option<BindGroup>,
     post_fx: Option<BindGroup>,
     camera: BindGroup,
     model: BindGroup,
-    camera_basic: BindGroup,
-    model_basic: BindGroup,
 }
 
 struct Textures {
@@ -112,33 +109,11 @@ impl Renderer {
             out_color: None,
         };
 
-        let res = voxelize(device, queue).unwrap();
-        dbg!(res.size);
-        let raw_voxels_view = res.texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("voxel volume view"),
-            dimension: Some(wgpu::TextureViewDimension::D3),
-            ..Default::default()
-        });
+        let src = std::include_bytes!("../../assets/sponza.glb");
+        let mut src = BufReader::new(Cursor::new(src));
+        let res = Voxelizer::load_gltf(&mut src, device, queue).unwrap();
 
         let uniforms = {
-            // let voxels = VoxelTree::from_scene(&engine.scene);
-            // let voxel_chunk_index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            //     label: Some("voxel chunk indices storage buffer"),
-            //     contents: bytemuck::cast_slice(&voxels.chunk_indices),
-            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            // });
-            // let voxel_chunks = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            //     label: Some("voxel chunks storage buffer"),
-            //     contents: bytemuck::cast_slice(&voxels.chunks),
-            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            // });
-            // let voxel_bricks = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            //     label: Some("voxel bricks storage buffer"),
-            //     contents: bytemuck::cast_slice(&voxels.bricks),
-            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            // });
-            // let scene_data = SceneDataBuffer::new(&engine.scene, voxels.size);
-
             let scene_data = SceneDataBuffer::new(&engine.scene, res.chunk_count);
             let scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("scene data uniform buffer"),
@@ -162,72 +137,16 @@ impl Renderer {
 
             Uniforms {
                 scene,
-                // voxel_chunk_index,
-                // voxel_chunks,
-                // voxel_bricks,
-                voxel_chunk_index: res.voxels.chunk_index,
-                voxel_chunks: res.voxels.chunks,
-                voxel_bricks: res.voxels.bricks,
+                voxel_chunk_index: res.brickmap.chunk_index,
+                voxel_chunks: res.brickmap.chunks,
+                voxel_bricks: res.brickmap.bricks,
+                voxel_palette: res.palette,
                 camera,
                 camera_data,
                 model,
                 model_data,
             }
         };
-
-        // let raw_voxels_view = {
-        // let size = engine.scene.size.as_usizevec3();
-        // let mut data = vec![0u8; 4 * size.element_product()];
-
-        // for instance in engine.scene.instances() {
-        //     for (pos, palette_index) in instance.voxels() {
-        //         let pos = (pos - engine.scene.base).as_usizevec3();
-        //         let color = engine.scene.palette[palette_index as usize].rgba;
-        //         data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 0] =
-        //             color[0];
-        //         data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 1] =
-        //             color[1];
-        //         data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 2] =
-        //             color[2];
-        //         data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 3] = 255;
-        //     }
-        // }
-
-        // let texture = device.create_texture(&wgpu::TextureDescriptor {
-        //     label: Some("voxel texture"),
-        //     size: wgpu::Extent3d {
-        //         width: size.x as u32,
-        //         height: size.y as u32,
-        //         depth_or_array_layers: size.z as u32,
-        //     },
-        //     mip_level_count: 1,
-        //     sample_count: 1,
-        //     dimension: wgpu::TextureDimension::D3,
-        //     format: wgpu::TextureFormat::Rgba8Unorm,
-        //     usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_DST,
-        //     view_formats: &[],
-        // });
-        // queue.write_texture(
-        //     wgpu::TexelCopyTextureInfo {
-        //         texture: &texture,
-        //         mip_level: 0,
-        //         origin: wgpu::Origin3d::ZERO,
-        //         aspect: wgpu::TextureAspect::All,
-        //     },
-        //     &data,
-        //     wgpu::TexelCopyBufferLayout {
-        //         offset: 0,
-        //         bytes_per_row: Some(size.x as u32 * 4),
-        //         rows_per_image: Some(size.y as u32),
-        //     },
-        //     wgpu::Extent3d {
-        //         width: size.x as u32,
-        //         height: size.y as u32,
-        //         depth_or_array_layers: size.z as u32,
-        //     },
-        // );
-
-        // };
 
         let pipelines = {
             let raymarch = {
@@ -343,7 +262,6 @@ impl Renderer {
 
             Pipelines {
                 raymarch,
-                raymarch_basic,
                 normal_blur,
                 deferred,
                 post_fx,
@@ -369,34 +287,13 @@ impl Renderer {
                 }],
             });
 
-            // remove later
-            let camera_basic = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("camera bind group"),
-                layout: &pipelines.raymarch_basic.get_bind_group_layout(1),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.camera.as_entire_binding(),
-                }],
-            });
-            let model_basic = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("model bind group"),
-                layout: &pipelines.raymarch_basic.get_bind_group_layout(2),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.model.as_entire_binding(),
-                }],
-            });
-
             BindGroups {
                 raymarch: None,
-                raymarch_basic: None,
                 normal_blur: None,
                 deferred: None,
                 post_fx: None,
                 camera,
                 model,
-                camera_basic,
-                model_basic,
             }
         };
 
@@ -414,7 +311,6 @@ impl Renderer {
             uniforms,
             timing,
             quad,
-            raw_voxels_view,
         };
 
         _self.update_screen_resources(&window, device);
@@ -576,33 +472,13 @@ impl Renderer {
                     binding: 6,
                     resource: self.uniforms.voxel_bricks.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.uniforms.voxel_palette.as_entire_binding(),
+                },
             ],
         });
         self.bind_groups.raymarch = Some(bg_raymarch);
-
-        let bg_raymarch_basic = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("test raymarch bind group"),
-            layout: &self.pipelines.raymarch_basic.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_albedo),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view_normal),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view_depth),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.raw_voxels_view),
-                },
-            ],
-        });
-        self.bind_groups.raymarch_basic = Some(bg_raymarch_basic);
 
         let bg_normal_blur = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("normal blur bind group"),
@@ -726,22 +602,6 @@ impl Renderer {
             pass.insert_debug_marker("raymarch");
             pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
         }
-
-        // {
-        //     let descriptor = wgpu::ComputePassDescriptor {
-        //         label: Some("raymarch test"),
-        //         timestamp_writes: None,
-        //     };
-        //     let mut pass = encoder.begin_compute_pass(&descriptor);
-
-        //     pass.set_pipeline(&self.pipelines.raymarch_basic);
-        //     pass.set_bind_group(0, &self.bind_groups.raymarch_basic, &[]);
-        //     pass.set_bind_group(1, &self.bind_groups.camera_basic, &[]);
-        //     pass.set_bind_group(2, &self.bind_groups.model_basic, &[]);
-
-        //     pass.insert_debug_marker("raymarch");
-        //     pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
-        // }
 
         // normal blur pass
         {

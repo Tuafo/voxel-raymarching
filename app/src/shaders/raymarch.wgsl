@@ -17,6 +17,10 @@ struct Brick {
 @group(0) @binding(4) var<storage, read> chunk_indices: array<u32>;
 @group(0) @binding(5) var<storage, read> chunks: array<Chunk>;
 @group(0) @binding(6) var<storage, read> bricks: array<Brick>;
+struct Palette {
+    data: array<vec4<u32>, 64>,
+}
+@group(0) @binding(7) var<uniform> palette: Palette;
 
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -137,14 +141,24 @@ fn raymarch(ray: Ray) -> RaymarchResult {
                 let voxel_index = (brick_pos.z << 6u) | (brick_pos.y << 3u) | brick_pos.x;
                 if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
                     // let voxel = (bricks[chunk.brick_index - 1u].data[voxel_index >> 2u] >> ((u32(voxel_index) & 3u) << 3u)) & 0xFFu;
-                    let albedo_packed = bricks[chunk.brick_index - 1u].data[voxel_index];
+                    let packed = bricks[chunk.brick_index - 1u].data[voxel_index];
+
+                    let palette_index = packed & 0xff;
+                    let albedo_packed = palette.data[palette_index >> 2u][palette_index & 3u];
                     let albedo = vec3<f32>(
                         f32((albedo_packed >> 24u) & 0xffu),
                         f32((albedo_packed >> 16u) & 0xffu),
                         f32((albedo_packed >> 8u) & 0xffu),
                     ) / 255.0;
 
-                    let normal = -vec3<f32>(sign(dir)) * vec3<f32>(mask);
+                    let normal_packed = packed >> 8u;
+                    var normal = normalize(vec3<f32>(
+                        f32((normal_packed >> 16u) & 0xff) / 255.0,
+                        f32((normal_packed >> 8u) & 0xff) / 255.0,
+                        f32(normal_packed & 0xff) / 255.0,
+                    ) * 2.0 - 1.0);
+
+                    // let normal = -vec3<f32>(sign(dir)) * vec3<f32>(mask);
 
                     let t_total = ray.t_start + t_entry * 8.0 + min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
 

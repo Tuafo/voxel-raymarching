@@ -43,7 +43,7 @@
     //     id: u32,
     // }
     // var<immediate> primitive_id: PrimitiveId;
-    
+
 struct Scene {
     base: vec3<f32>, // before scaling by voxel scale
     size: vec3<f32>, // before scaling by voxel scale
@@ -57,10 +57,15 @@ struct Material {
     albedo_index: i32,
     normal_index: i32,
 }
+struct Palette {
+    data: array<vec4<u32>, 64>,
+}
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<storage, read> materials: array<Material>;
 @group(0) @binding(2) var tex_sampler: sampler;
-@group(0) @binding(3) var out_voxels: texture_storage_3d<rgba8unorm, write>;
+@group(0) @binding(3) var out_voxels: texture_storage_3d<rg32uint, write>;
+// @group(0) @binding(4) var<uniform> palette: Palette;
+// @group(0) @binding(5) var palette_lut: texture_storage_3d<r32uint, read>;
 
 @group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;
 
@@ -76,7 +81,7 @@ struct Primitive {
 @group(2) @binding(3) var<storage, read> normals: array<f32>;
 @group(2) @binding(4) var<storage, read> tangents: array<f32>;
 @group(2) @binding(5) var<storage, read> uvs: array<f32>;
-    
+
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
@@ -100,6 +105,16 @@ fn compute_main(in: ComputeIn) {
     let v0 = ((primitive.matrix * vec4(l_p0, 1.0)).xyz - scene.base) * scene.scale;
     let v1 = ((primitive.matrix * vec4(l_p1, 1.0)).xyz - scene.base) * scene.scale;
     let v2 = ((primitive.matrix * vec4(l_p2, 1.0)).xyz - scene.base) * scene.scale;
+
+    // triangle ws vertex normals
+    let normal_0 = normalize(primitive.normal_matrix * vec3(normals[i0 * 3u], normals[i0 * 3u + 1u], normals[i0 * 3u + 2u]));
+    let normal_1 = normalize(primitive.normal_matrix * vec3(normals[i1 * 3u], normals[i1 * 3u + 1u], normals[i1 * 3u + 2u]));
+    let normal_2 = normalize(primitive.normal_matrix * vec3(normals[i2 * 3u], normals[i2 * 3u + 1u], normals[i2 * 3u + 2u]));
+
+    // triangle vertex tangents
+    let tangent_0 = vec4(normalize(primitive.normal_matrix * vec3(tangents[i0 * 4u], tangents[i0 * 4u + 1u], tangents[i0 * 4u + 2u])), tangents[i0 * 4u + 3u]);
+    let tangent_1 = vec4(normalize(primitive.normal_matrix * vec3(tangents[i1 * 4u], tangents[i1 * 4u + 1u], tangents[i1 * 4u + 2u])), tangents[i1 * 4u + 3u]);
+    let tangent_2 = vec4(normalize(primitive.normal_matrix * vec3(tangents[i2 * 4u], tangents[i2 * 4u + 1u], tangents[i2 * 4u + 2u])), tangents[i2 * 4u + 3u]);
 
     var min_bd = min(min(v0, v1), v2);
     var max_bd = max(max(v0, v1), v2);
@@ -126,12 +141,52 @@ fn compute_main(in: ComputeIn) {
 
                     let material = materials[primitive.material_id];
 
-                    var albedo = vec3(0.0);
+                    var albedo_packed = 0u;
+                    var normal_packed = 0u;
                     if material.albedo_index >= 0 {
-                        albedo = textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0).rgb;
+                        let albedo = textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
+                        let rgba = vec4<u32>(albedo * 255.0 + 0.5);
+                        albedo_packed = ((rgba.r & 0xffu) << 24u) | ((rgba.g & 0xffu) << 16u) | ((rgba.b & 0xffu) << 8u) | 0xff;
+
+                        var ws_normal = normalize(weights.x * normal_0 + weights.y * normal_1 + weights.z * normal_2);
+
+                        let tangent = weights.x * tangent_0 + weights.y * tangent_1 + weights.z * tangent_2;
+                        let ws_tangent = normalize(tangent.xyz);
+                        let ws_bitangent = cross(ws_normal, ws_tangent) * tangent.w;
+                        let tbn = mat3x3<f32>(
+                        ws_tangent,
+                        ws_bitangent,
+                        ws_normal,
+                        );
+
+                        let tangent_normal = textureSampleLevel(textures[material.normal_index], tex_sampler, uv, 0.0).rgb * 2.0 - 1.0;
+                        ws_normal = normalize(tbn * tangent_normal);
+
+
+                        let nrm = vec3<u32>(clamp(ws_normal * 0.5 + 0.5, vec3(0.0), vec3(1.0)) * 255.0);
+                        normal_packed = ((nrm.r & 0xffu) << 24u) | ((nrm.g & 0xffu) << 16u) | ((nrm.b & 0xffu) << 8u);
                     }
 
-                    textureStore(out_voxels, vec3<i32>(i32(x), i32(y), i32(z)), vec4(albedo, 1.0));
+                    // var palette_index = 0u;
+                    // if any(albedo_u > vec3(0)) {
+                    //     // palette_index = textureLoad(palette_lut, vec3<i32>(lut_pos)).r & 0xffu;
+                    //     // palette_index = 1u + in.brick_index % 255u;
+                    //     var min_distance = 1e10;
+                    //     for (var i = 1u; i < 256u; i++) {
+                    //         let rgba = palette.data[i >> 2u][i & 3u];
+                    //         let c = vec3<f32>(
+                    //             f32((rgba >> 24u) & 0xFFu) / 255.0,
+                    //             f32((rgba >> 16u) & 0xFFu) / 255.0,
+                    //             f32((rgba >> 8u) & 0xFFu) / 255.0,
+                    //         );
+                    //         let d = distance(c, albedo.rgb);
+                    //         if d < min_distance {
+                    //             palette_index = i;
+                    //             min_distance = d;
+                    //         }
+                    //     }
+                    // }
+                    textureStore(out_voxels, vec3<i32>(vec3(x, y, z)), vec4<u32>(albedo_packed, normal_packed, 0, 0));
                 }
             }
         }

@@ -9,7 +9,7 @@ use winit::{
     application::ApplicationHandler, event::DeviceEvent, event::WindowEvent, window::Window,
 };
 
-use crate::renderer::loader::ModelViewer;
+use crate::renderer::gltf_viewer::ModelViewer;
 use crate::{
     engine::{Engine, EngineCtx},
     renderer::{Renderer, RendererCtx},

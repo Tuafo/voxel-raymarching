@@ -8,7 +8,7 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-@compute @workgroup_size(8, 8, 1)
+@compute @workgroup_size(4, 4, 4)
 fn compute_main(in: ComputeIn) {
     let color = (vec3<f32>(in.id) + 0.5) / 255.0;
 

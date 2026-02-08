@@ -14,8 +14,9 @@ fn compute_main(in: ComputeIn) {
     let texel_size = 1.0 / vec2<f32>(dimensions);
     let uv = (vec2<f32>(in.id.xy) + 0.5) * texel_size;
 
+    // let albedo = textureSampleLevel(tex_albedo, main_sampler, uv, 0.0).rgb * 0.0001 + vec3(1.0);
     let albedo = textureSampleLevel(tex_albedo, main_sampler, uv, 0.0).rgb;
-    let normal = textureSampleLevel(tex_normal, main_sampler, uv, 0.0).rgb;
+    let normal = normalize(textureSampleLevel(tex_normal, main_sampler, uv, 0.0).rgb);
     let depth = textureSampleLevel(tex_depth, main_sampler, uv, 0.0).rgb;
 
 
@@ -24,9 +25,9 @@ fn compute_main(in: ComputeIn) {
     let diff = max(dot(normal, ws_light_dir), 0.0);
 
     // let color = albedo * (diff + 0.2);
-    let color = albedo * (diff * 0.00001 + 1.0);
-    // color *= 0.000001;
-    // color += res.normal;
+    var color = albedo * (diff * 0.5 + 0.5);
+    color *= 0.000001;
+    color += normal * 0.5 + 0.5;
 
     textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
 }
