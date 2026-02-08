@@ -14,6 +14,6 @@ egui-winit = "0.33.3"
 env_logger = "0.11.8"
 glam = { version = "0.31.0", features = ["serde", "bytemuck"] }
 pollster = "0.4.0"
-wgpu = "27.0.1"
+wgpu = "28.0.0"
 winit = "0.30.12"
 image = { version = "0.25.9", features = ["jpeg", "png"] }

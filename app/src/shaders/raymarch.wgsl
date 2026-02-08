@@ -8,7 +8,7 @@ struct Chunk {
     mask: array<u32, 16>,
 }
 struct Brick {
-    data: array<u32, 128>,
+    data: array<u32, 512>,
 }
 @group(0) @binding(0) var out_albedo: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var out_normal: texture_storage_2d<rgba16float, write>;
@@ -53,8 +53,9 @@ fn compute_main(in: ComputeIn) {
     var normal = vec3(0.0);
     var depth = 0.0;
 
-    if res.material_id > 0u {
-        albedo = palette_color(res.material_id).xyz;
+    if res.hit {
+        // albedo = palette_color(res.material_id).xyz;
+        albedo = res.albedo;
         normal = normalize(model.normal_transform * res.normal);
 
         depth = res.distance * dot(ray.direction, camera.forward);
@@ -91,7 +92,9 @@ struct Ray {
 }
 
 struct RaymarchResult {
-    material_id: u32,
+    // material_id: u32,
+    hit: bool,
+    albedo: vec3<f32>,
     normal: vec3<f32>,
     distance: f32,
 }
@@ -115,7 +118,7 @@ fn raymarch(ray: Ray) -> RaymarchResult {
 
     for (var i = 0u; i < DDA_MAX_STEPS && all(pos < vec3<i32>(scene.size)) && all(pos >= vec3(0)); i++) {
 
-        let chunk_pos_index = u32(pos.x) * scene.size.y * scene.size.z + u32(pos.y) * scene.size.z + u32(pos.z);
+        let chunk_pos_index = u32(pos.z) * scene.size.x * scene.size.y + u32(pos.y) * scene.size.x + u32(pos.x);
         let chunk_index = chunk_indices[chunk_pos_index];
 
         if chunk_index != 0u {
@@ -131,15 +134,21 @@ fn raymarch(ray: Ray) -> RaymarchResult {
             prev_ray_length = vec3<f32>(0.0);
 
             while all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)) {
-                let voxel_index = (brick_pos.x << 6u) | (brick_pos.y << 3u) | brick_pos.z;
+                let voxel_index = (brick_pos.z << 6u) | (brick_pos.y << 3u) | brick_pos.x;
                 if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
-                    let voxel = (bricks[chunk.brick_index - 1u].data[voxel_index >> 2u] >> ((u32(voxel_index) & 3u) << 3u)) & 0xFFu;
+                    // let voxel = (bricks[chunk.brick_index - 1u].data[voxel_index >> 2u] >> ((u32(voxel_index) & 3u) << 3u)) & 0xFFu;
+                    let albedo_packed = bricks[chunk.brick_index - 1u].data[voxel_index];
+                    let albedo = vec3<f32>(
+                        f32((albedo_packed >> 24u) & 0xffu),
+                        f32((albedo_packed >> 16u) & 0xffu),
+                        f32((albedo_packed >> 8u) & 0xffu),
+                    ) / 255.0;
 
                     let normal = -vec3<f32>(sign(dir)) * vec3<f32>(mask);
 
                     let t_total = ray.t_start + t_entry * 8.0 + min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
 
-                    return RaymarchResult(voxel, normal, t_total);
+                    return RaymarchResult(true, albedo, normal, t_total);
                 }
 
                 prev_ray_length = brick_ray_length;

@@ -206,16 +206,24 @@ use crate::{RendererCtx, SizedWindow, engine::Engine, renderer::buffers::CameraD
 //     Ok(tree)
 // }
 
-const VOXEL_SCALE: f32 = 10.0;
+const VOXELS_PER_UNIT: u32 = 15;
 
-pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
+pub struct VoxelizeResult {
+    pub texture: wgpu::Texture,
+    pub scene: Scene,
+    pub size: glam::IVec3,
+    pub voxels: PackResult,
+    pub chunk_count: glam::UVec3,
+}
+pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<VoxelizeResult> {
     let src = std::include_bytes!("../../assets/sponza.glb");
     let mut src = BufReader::new(Cursor::new(src));
 
     let gltf = Gltf::parse(&mut src)?;
     let scene = Scene::from_gltf(&gltf)?;
-    let base = scene.min.floor().as_uvec3();
-    let size = ((scene.max.ceil() - scene.min.floor()) * VOXEL_SCALE).as_uvec3();
+    let base = scene.min.floor().as_ivec3();
+    let size = (scene.max.ceil() - scene.min.floor()).ceil().as_ivec3();
+    let scaled_size = size.as_uvec3() * VOXELS_PER_UNIT;
 
     let bg_layout_shared = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("shared voxelizer bind group layout"),
@@ -243,21 +251,11 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: std::num::NonZeroU32::new(scene.textures.len() as u32),
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 4,
+                binding: 3,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::StorageTexture {
                     access: wgpu::StorageTextureAccess::WriteOnly,
@@ -268,6 +266,21 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
             },
         ],
     });
+    // have to separate this from the shared layout due to wgpu restriction
+    let bg_layout_scene_textures =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene textures bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: std::num::NonZeroU32::new(scene.textures.len() as u32),
+            }],
+        });
     let bg_layout_per_primitive =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("per-primitive voxelizer bind group layout"),
@@ -302,12 +315,46 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("voxelizer pipeline layout"),
-        bind_group_layouts: &[&bg_layout_shared, &bg_layout_per_primitive],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[
+            &bg_layout_shared,
+            &bg_layout_scene_textures,
+            &bg_layout_per_primitive,
+        ],
+        immediate_size: 0,
     });
     let pipeline = {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -328,9 +375,9 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("voxel texture"),
         size: wgpu::Extent3d {
-            width: size.x,
-            height: size.y,
-            depth_or_array_layers: size.z,
+            width: scaled_size.x,
+            height: scaled_size.y,
+            depth_or_array_layers: scaled_size.z,
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -355,7 +402,7 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
             contents: bytemuck::cast_slice(&[SceneBufferEntry {
                 base: base.as_vec3().extend(0.0),
                 size: size.as_vec3(),
-                scale: VOXEL_SCALE,
+                scale: VOXELS_PER_UNIT as f32,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -392,6 +439,49 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         // binding 2
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        // binding 3
+        // out texture (already made)
+
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shared voxelizer bind group"),
+            layout: &bg_layout_shared,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer_scene.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buffer_materials.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&texture.create_view(
+                        &wgpu::TextureViewDescriptor {
+                            label: Some("voxelized result texture output view"),
+                            usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+                            ..Default::default()
+                        },
+                    )),
+                },
+            ],
+        })
+    };
+
+    let bg_scene_textures = {
         let texture_views = scene
             .textures
             .iter()
@@ -437,52 +527,15 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
                 view
             })
             .collect::<Vec<wgpu::TextureView>>();
-        // binding 3
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-        // binding 4
-        // out texture (already made)
-
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("shared voxelizer bind group"),
-            layout: &bg_layout_shared,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer_scene.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: buffer_materials.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureViewArray(
-                        &texture_views.iter().collect::<Vec<&wgpu::TextureView>>(),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&texture.create_view(
-                        &wgpu::TextureViewDescriptor {
-                            label: Some("voxelized result texture output view"),
-                            usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
-                            ..Default::default()
-                        },
-                    )),
-                },
-            ],
+            label: Some("scene textures bind group"),
+            layout: &bg_layout_scene_textures,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureViewArray(
+                    &texture_views.iter().collect::<Vec<&wgpu::TextureView>>(),
+                ),
+            }],
         })
     };
 
@@ -546,6 +599,24 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
                 contents: &gltf.bin[primitive.positions.start..primitive.positions.end],
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
+            // binding 3
+            let buffer_normals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("primitive vertex normal data"),
+                contents: &gltf.bin[primitive.normals.start..primitive.normals.end],
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            // binding 4
+            let buffer_tangents = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("primitive vertex tangent data"),
+                contents: &gltf.bin[primitive.tangents.start..primitive.tangents.end],
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            // binding 5
+            let buffer_uv = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("primitive vertex uv data"),
+                contents: &gltf.bin[primitive.uv.start..primitive.uv.end],
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
 
             bg_per_primitive.push(PrimitiveGroup {
                 bg: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -563,6 +634,18 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
                         wgpu::BindGroupEntry {
                             binding: 2,
                             resource: buffer_positions.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: buffer_normals.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: buffer_tangents.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: buffer_uv.as_entire_binding(),
                         },
                     ],
                 }),
@@ -582,17 +665,209 @@ pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Text
 
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, Some(&bg_shared), &[]);
+        pass.set_bind_group(1, Some(&bg_scene_textures), &[]);
 
         for primitive in bg_per_primitive {
-            pass.set_bind_group(1, Some(&primitive.bg), &[]);
+            pass.set_bind_group(2, Some(&primitive.bg), &[]);
 
             let tris = primitive.index_count / 3;
             pass.dispatch_workgroups(tris.div_ceil(64), 1, 1);
         }
     }
     queue.submit([encoder.finish()]);
+    let chunk_count = (scaled_size + glam::uvec3(7, 7, 7)) / 8;
 
-    Ok(texture)
+    let voxels = pack_voxels(device, queue, chunk_count, &texture);
+
+    Ok(VoxelizeResult {
+        scene,
+        texture,
+        size,
+        chunk_count,
+        voxels,
+    })
+}
+
+pub struct PackResult {
+    pub chunk_index: wgpu::Buffer,
+    pub chunks: wgpu::Buffer,
+    pub bricks: wgpu::Buffer,
+}
+
+fn pack_voxels(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    chunk_count: glam::UVec3,
+    voxels: &wgpu::Texture,
+) -> PackResult {
+    let bg_layout_packed_data = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("voxel brickmap data layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let bg_layout_alloc_texture =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("voxel brickmap input alloc and texture"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadOnly,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                    },
+                    count: None,
+                },
+            ],
+        });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("voxel brickmap packing"),
+        bind_group_layouts: &[&bg_layout_packed_data, &bg_layout_alloc_texture],
+        immediate_size: 0,
+    });
+    let pipeline = {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("voxel brickmap packing"),
+            source: wgpu::ShaderSource::Wgsl(std::include_str!("../shaders/tree.wgsl").into()),
+        });
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("voxel packing pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("compute_main"),
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    };
+
+    let buffer_chunk_indices = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("chunk indices"),
+        size: (chunk_count.element_product() as u64) * 4,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+    let buffer_chunks = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("chunk data"),
+        size: (chunk_count.element_product() as u64) * 68,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+    let buffer_bricks = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("brick data"),
+        size: (chunk_count.element_product() as u64) * 2048,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+    let bg_packed_data = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("voxel brickmap data"),
+        layout: &bg_layout_packed_data,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer_chunk_indices.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buffer_chunks.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buffer_bricks.as_entire_binding(),
+            },
+        ],
+    });
+    let bg_alloc_texture = {
+        let buffer_alloc_data = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("brickmap allocator data"),
+            size: 8,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let view = voxels.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("raw voxels view"),
+            dimension: Some(wgpu::TextureViewDimension::D3),
+            usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+            ..Default::default()
+        });
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("brickmap builder data"),
+            layout: &bg_layout_alloc_texture,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer_alloc_data.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+            ],
+        })
+    };
+
+    // now execute
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let descriptor = wgpu::ComputePassDescriptor {
+            label: Some("voxel brickmap packing"),
+            timestamp_writes: None,
+        };
+        let mut pass = encoder.begin_compute_pass(&descriptor);
+
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, Some(&bg_packed_data), &[]);
+        pass.set_bind_group(1, Some(&bg_alloc_texture), &[]);
+
+        pass.dispatch_workgroups(chunk_count.x, chunk_count.y, chunk_count.z);
+    }
+    queue.submit([encoder.finish()]);
+
+    PackResult {
+        chunk_index: buffer_chunk_indices,
+        chunks: buffer_chunks,
+        bricks: buffer_bricks,
+    }
 }
 
 #[derive(Debug)]
@@ -757,7 +1032,7 @@ impl ModelViewer {
             address_mode_w: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -829,7 +1104,7 @@ impl ModelViewer {
                 &bg_layout_model,
                 &bg_layout_scene_textures,
             ],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         let pipeline = {
@@ -931,7 +1206,7 @@ impl ModelViewer {
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: Default::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -1068,6 +1343,7 @@ impl ModelViewer {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             };
             let mut pass = encoder.begin_render_pass(&descriptor);
 

@@ -2,7 +2,6 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::schema;
 use anyhow::{Context, Result, bail, ensure};
-use glam::Vec4Swizzles;
 
 /// Parsed scene data
 #[derive(Debug)]
@@ -140,15 +139,26 @@ impl Scene {
             }?;
             let mesh = &meshes[mesh_id];
             for primitive in &mesh.primitives {
-                min = (transform * primitive.min.extend(1.0)).xyz().min(min);
-                max = (transform * primitive.max.extend(1.0)).xyz().max(max);
+                let size = primitive.max - primitive.min;
+                const CORNERS: [glam::Vec3; 8] = [
+                    glam::vec3(0.0, 0.0, 0.0),
+                    glam::vec3(0.0, 0.0, 1.0),
+                    glam::vec3(0.0, 1.0, 0.0),
+                    glam::vec3(0.0, 1.0, 1.0),
+                    glam::vec3(1.0, 0.0, 0.0),
+                    glam::vec3(1.0, 0.0, 1.0),
+                    glam::vec3(1.0, 1.0, 0.0),
+                    glam::vec3(1.0, 1.0, 1.0),
+                ];
+                for corner in CORNERS {
+                    let pos = transform.transform_point3(primitive.min + size * corner);
+                    min = pos.min(min);
+                    max = pos.max(max);
+                }
             }
 
             nodes.push(Node { mesh_id, transform });
         }
-
-        min = min.min(max);
-        max = max.max(min);
 
         Ok(Self {
             nodes,

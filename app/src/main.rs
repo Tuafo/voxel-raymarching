@@ -86,6 +86,7 @@ impl State {
         let mut limits = wgpu::Limits::default();
         limits.max_sampled_textures_per_shader_stage = 128;
         limits.max_binding_array_elements_per_shader_stage = 128;
+        limits.max_compute_invocations_per_workgroup = 512;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {

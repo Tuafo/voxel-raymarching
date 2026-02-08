@@ -104,8 +104,6 @@ impl Renderer {
         format: wgpu::TextureFormat,
         engine: &Engine,
     ) -> Self {
-        voxelize(device, queue).unwrap();
-
         let textures = Textures {
             albedo: None,
             normal: None,
@@ -114,25 +112,34 @@ impl Renderer {
             out_color: None,
         };
 
-        let uniforms = {
-            let voxels = VoxelTree::from_scene(&engine.scene);
-            let voxel_chunk_index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("voxel chunk indices storage buffer"),
-                contents: bytemuck::cast_slice(&voxels.chunk_indices),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-            let voxel_chunks = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("voxel chunks storage buffer"),
-                contents: bytemuck::cast_slice(&voxels.chunks),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-            let voxel_bricks = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("voxel bricks storage buffer"),
-                contents: bytemuck::cast_slice(&voxels.bricks),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
+        let res = voxelize(device, queue).unwrap();
+        dbg!(res.size);
+        let raw_voxels_view = res.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("voxel volume view"),
+            dimension: Some(wgpu::TextureViewDimension::D3),
+            ..Default::default()
+        });
 
-            let scene_data = SceneDataBuffer::new(&engine.scene, voxels.size);
+        let uniforms = {
+            // let voxels = VoxelTree::from_scene(&engine.scene);
+            // let voxel_chunk_index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            //     label: Some("voxel chunk indices storage buffer"),
+            //     contents: bytemuck::cast_slice(&voxels.chunk_indices),
+            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            // });
+            // let voxel_chunks = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            //     label: Some("voxel chunks storage buffer"),
+            //     contents: bytemuck::cast_slice(&voxels.chunks),
+            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            // });
+            // let voxel_bricks = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            //     label: Some("voxel bricks storage buffer"),
+            //     contents: bytemuck::cast_slice(&voxels.bricks),
+            //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            // });
+            // let scene_data = SceneDataBuffer::new(&engine.scene, voxels.size);
+
+            let scene_data = SceneDataBuffer::new(&engine.scene, res.chunk_count);
             let scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("scene data uniform buffer"),
                 contents: bytemuck::cast_slice(&[scene_data]),
@@ -155,9 +162,12 @@ impl Renderer {
 
             Uniforms {
                 scene,
-                voxel_chunk_index,
-                voxel_chunks,
-                voxel_bricks,
+                // voxel_chunk_index,
+                // voxel_chunks,
+                // voxel_bricks,
+                voxel_chunk_index: res.voxels.chunk_index,
+                voxel_chunks: res.voxels.chunks,
+                voxel_bricks: res.voxels.bricks,
                 camera,
                 camera_data,
                 model,
@@ -165,64 +175,59 @@ impl Renderer {
             }
         };
 
-        let raw_voxels_view = {
-            let size = engine.scene.size.as_usizevec3();
-            let mut data = vec![0u8; 4 * size.element_product()];
+        // let raw_voxels_view = {
+        // let size = engine.scene.size.as_usizevec3();
+        // let mut data = vec![0u8; 4 * size.element_product()];
 
-            for instance in engine.scene.instances() {
-                for (pos, palette_index) in instance.voxels() {
-                    let pos = (pos - engine.scene.base).as_usizevec3();
-                    let color = engine.scene.palette[palette_index as usize].rgba;
-                    data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 0] =
-                        color[0];
-                    data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 1] =
-                        color[1];
-                    data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 2] =
-                        color[2];
-                    data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 3] = 255;
-                }
-            }
+        // for instance in engine.scene.instances() {
+        //     for (pos, palette_index) in instance.voxels() {
+        //         let pos = (pos - engine.scene.base).as_usizevec3();
+        //         let color = engine.scene.palette[palette_index as usize].rgba;
+        //         data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 0] =
+        //             color[0];
+        //         data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 1] =
+        //             color[1];
+        //         data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 2] =
+        //             color[2];
+        //         data[pos.z * size.x * size.y * 4 + pos.y * size.x * 4 + pos.x * 4 + 3] = 255;
+        //     }
+        // }
 
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("voxel texture"),
-                size: wgpu::Extent3d {
-                    width: size.x as u32,
-                    height: size.y as u32,
-                    depth_or_array_layers: size.z as u32,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D3,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size.x as u32 * 4),
-                    rows_per_image: Some(size.y as u32),
-                },
-                wgpu::Extent3d {
-                    width: size.x as u32,
-                    height: size.y as u32,
-                    depth_or_array_layers: size.z as u32,
-                },
-            );
+        // let texture = device.create_texture(&wgpu::TextureDescriptor {
+        //     label: Some("voxel texture"),
+        //     size: wgpu::Extent3d {
+        //         width: size.x as u32,
+        //         height: size.y as u32,
+        //         depth_or_array_layers: size.z as u32,
+        //     },
+        //     mip_level_count: 1,
+        //     sample_count: 1,
+        //     dimension: wgpu::TextureDimension::D3,
+        //     format: wgpu::TextureFormat::Rgba8Unorm,
+        //     usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_DST,
+        //     view_formats: &[],
+        // });
+        // queue.write_texture(
+        //     wgpu::TexelCopyTextureInfo {
+        //         texture: &texture,
+        //         mip_level: 0,
+        //         origin: wgpu::Origin3d::ZERO,
+        //         aspect: wgpu::TextureAspect::All,
+        //     },
+        //     &data,
+        //     wgpu::TexelCopyBufferLayout {
+        //         offset: 0,
+        //         bytes_per_row: Some(size.x as u32 * 4),
+        //         rows_per_image: Some(size.y as u32),
+        //     },
+        //     wgpu::Extent3d {
+        //         width: size.x as u32,
+        //         height: size.y as u32,
+        //         depth_or_array_layers: size.z as u32,
+        //     },
+        // );
 
-            texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("voxel volume view"),
-                dimension: Some(wgpu::TextureViewDimension::D3),
-                ..Default::default()
-            })
-        };
+        // };
 
         let pipelines = {
             let raymarch = {
@@ -331,8 +336,8 @@ impl Renderer {
                     primitive: Default::default(),
                     depth_stencil: None,
                     multisample: Default::default(),
-                    multiview: None,
                     cache: None,
+                    multiview_mask: None,
                 })
             };
 
@@ -531,7 +536,7 @@ impl Renderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             lod_min_clamp: 0.0,
             lod_max_clamp: f32::MAX,
             compare: None,
@@ -722,21 +727,21 @@ impl Renderer {
             pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
         }
 
-        {
-            let descriptor = wgpu::ComputePassDescriptor {
-                label: Some("raymarch test"),
-                timestamp_writes: None,
-            };
-            let mut pass = encoder.begin_compute_pass(&descriptor);
+        // {
+        //     let descriptor = wgpu::ComputePassDescriptor {
+        //         label: Some("raymarch test"),
+        //         timestamp_writes: None,
+        //     };
+        //     let mut pass = encoder.begin_compute_pass(&descriptor);
 
-            pass.set_pipeline(&self.pipelines.raymarch_basic);
-            pass.set_bind_group(0, &self.bind_groups.raymarch_basic, &[]);
-            pass.set_bind_group(1, &self.bind_groups.camera_basic, &[]);
-            pass.set_bind_group(2, &self.bind_groups.model_basic, &[]);
+        //     pass.set_pipeline(&self.pipelines.raymarch_basic);
+        //     pass.set_bind_group(0, &self.bind_groups.raymarch_basic, &[]);
+        //     pass.set_bind_group(1, &self.bind_groups.camera_basic, &[]);
+        //     pass.set_bind_group(2, &self.bind_groups.model_basic, &[]);
 
-            pass.insert_debug_marker("raymarch");
-            pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
-        }
+        //     pass.insert_debug_marker("raymarch");
+        //     pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
+        // }
 
         // normal blur pass
         {
@@ -806,6 +811,7 @@ impl Renderer {
                 }),
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             };
             let mut pass = encoder.begin_render_pass(&descriptor);
 
