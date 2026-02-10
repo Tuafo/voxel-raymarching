@@ -20,6 +20,8 @@ struct Program {
     state: Option<State>,
 }
 
+const DEBUG_MODELS: bool = false;
+
 impl ApplicationHandler for Program {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let cfg = Window::default_attributes()
@@ -63,8 +65,7 @@ struct State {
     renderer: Renderer,
     ui: Ui,
     prev_time: Option<Instant>,
-
-    model_debug: Option<ModelViewer>,
+    debug_viewer: Option<ModelViewer>,
 }
 
 impl State {
@@ -108,8 +109,17 @@ impl State {
 
         let renderer = Renderer::new(Arc::clone(&window), &device, &queue, format, &engine);
 
-        // let model_debug = Some(ModelViewer::new(Arc::clone(&window), &device, &queue, format, &engine)?);
-        let model_debug = None;
+        let debug_viewer = if DEBUG_MODELS {
+            Some(ModelViewer::new(
+                Arc::clone(&window),
+                &device,
+                &queue,
+                format,
+                &engine,
+            )?)
+        } else {
+            None
+        };
 
         let ui = Ui::new(&window, &device, format);
 
@@ -122,8 +132,8 @@ impl State {
             engine,
             renderer,
             ui,
+            debug_viewer,
             prev_time: None,
-            model_debug,
         };
 
         _self.configure_surface();
@@ -143,8 +153,8 @@ impl State {
             },
         );
 
-        if let Some(model_debug) = &mut self.model_debug {
-            model_debug.frame(&mut RendererCtx {
+        if let Some(viewer) = &mut self.debug_viewer {
+            viewer.frame(&mut RendererCtx {
                 window: &self.window,
                 device: &self.device,
                 queue: &self.queue,
@@ -179,8 +189,8 @@ impl State {
 
         self.engine.handle_resize(&self.window);
         self.renderer.handle_resize(&self.window, &self.device);
-        if let Some(model_debug) = &mut self.model_debug {
-            model_debug.handle_resize(&self.window, &self.device);
+        if let Some(viewer) = &mut self.debug_viewer {
+            viewer.handle_resize(&self.window, &self.device);
         }
     }
 

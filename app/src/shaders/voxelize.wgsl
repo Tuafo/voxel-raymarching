@@ -1,49 +1,3 @@
-// struct Camera {
-//     view_proj_matrix: mat4x4<f32>,
-// }
-// @group(0) @binding(0) var<uniform> camera: Camera;
-
-// struct Node {
-//     matrix: mat4x4<f32>,
-//     normal_matrix: mat3x3<f32>,
-// }
-// @group(0) @binding(1) var<storage, read> nodes: array<Node>;
-
-// struct Primitive {
-//     min_bounds: vec3<f32>,
-//     node_id: u32,
-//     max_bounds: vec3<f32>,
-//     material_id: u32,
-//     index_offset: u32,
-//     index_count: u32,
-//     vertex_pos_offset: u32,
-//     vertex_normal_offset: u32,
-// }
-// @group(0) @binding(2) var<storage, read> primitives: array<Primitive>;
-
-// struct Material {
-//     base_albedo: vec4<f32>,
-//     metallic: f32,
-//     roughness: f32,
-//     normal_scale: f32,
-//     albedo_index: i32,
-//     normal_index: i32,
-// }
-// @group(0) @binding(3) var<storage, read> materials: array<Material>;
-
-// @group(0) @binding(4) var textures: binding_array<texture_2d<f32>>;
-// @group(0) @binding(5) var tex_sampler: sampler;
-// @group(0) @binding(6) var out_voxels: texture_storage_3d<rgba8unorm, write>;
-
-// @group(1) @binding(0) var<storage, read> indices: array<u32>;
-// @group(1) @binding(1) var<storage, read> positions: array<f32>;
-
-// struct PrimitiveId {
-    //     // making this a struct as the release notes cite an issue on DX12
-    //     id: u32,
-    // }
-    // var<immediate> primitive_id: PrimitiveId;
-
 struct Scene {
     base: vec3<f32>, // before scaling by voxel scale
     size: vec3<f32>, // before scaling by voxel scale
@@ -56,17 +10,16 @@ struct Material {
     normal_scale: f32,
     albedo_index: i32,
     normal_index: i32,
-}
-struct Palette {
-    data: array<vec4<u32>, 64>,
+    double_sided: u32,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<storage, read> materials: array<Material>;
 @group(0) @binding(2) var tex_sampler: sampler;
 @group(0) @binding(3) var out_voxels: texture_storage_3d<rg32uint, write>;
-// @group(0) @binding(4) var<uniform> palette: Palette;
-// @group(0) @binding(5) var palette_lut: texture_storage_3d<r32uint, read>;
 
+// all the gltf's scene textures
+// has to be a separate bind group per wgpu
+// binding_array might fuck with your LSP since it's non-standard w.r.t. wgsl spec
 @group(1) @binding(0) var textures: binding_array<texture_2d<f32>>;
 
 struct Primitive {
@@ -112,9 +65,14 @@ fn compute_main(in: ComputeIn) {
     let normal_2 = normalize(primitive.normal_matrix * vec3(normals[i2 * 3u], normals[i2 * 3u + 1u], normals[i2 * 3u + 2u]));
 
     // triangle vertex tangents
-    let tangent_0 = vec4(normalize(primitive.normal_matrix * vec3(tangents[i0 * 4u], tangents[i0 * 4u + 1u], tangents[i0 * 4u + 2u])), tangents[i0 * 4u + 3u]);
-    let tangent_1 = vec4(normalize(primitive.normal_matrix * vec3(tangents[i1 * 4u], tangents[i1 * 4u + 1u], tangents[i1 * 4u + 2u])), tangents[i1 * 4u + 3u]);
-    let tangent_2 = vec4(normalize(primitive.normal_matrix * vec3(tangents[i2 * 4u], tangents[i2 * 4u + 1u], tangents[i2 * 4u + 2u])), tangents[i2 * 4u + 3u]);
+    let model_rot_scale = mat3x3<f32>(
+        primitive.matrix[0].xyz,
+        primitive.matrix[1].xyz,
+        primitive.matrix[2].xyz
+    );
+    let tangent_0 = vec4(normalize(model_rot_scale * vec3(tangents[i0 * 4u], tangents[i0 * 4u + 1u], tangents[i0 * 4u + 2u])), tangents[i0 * 4u + 3u]);
+    let tangent_1 = vec4(normalize(model_rot_scale * vec3(tangents[i1 * 4u], tangents[i1 * 4u + 1u], tangents[i1 * 4u + 2u])), tangents[i1 * 4u + 3u]);
+    let tangent_2 = vec4(normalize(model_rot_scale * vec3(tangents[i2 * 4u], tangents[i2 * 4u + 1u], tangents[i2 * 4u + 2u])), tangents[i2 * 4u + 3u]);
 
     var min_bd = min(min(v0, v1), v2);
     var max_bd = max(max(v0, v1), v2);
@@ -124,6 +82,11 @@ fn compute_main(in: ComputeIn) {
 
     let min_bd_i = vec3<u32>(min_bd);
     let max_bd_i = vec3<u32>(max_bd);
+
+    // TODO this is super slow, might try to subdivide since
+    // some threads stall the pipeline with the big triangles
+    // maybe new wgpu mesh shaders can help
+    // just a generation step though
 
     for (var x = min_bd_i.x; x < max_bd_i.x; x++) {
         for (var y = min_bd_i.y; y < max_bd_i.y; y++) {
@@ -146,47 +109,25 @@ fn compute_main(in: ComputeIn) {
                     if material.albedo_index >= 0 {
                         let albedo = textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
                         let rgba = vec4<u32>(albedo * 255.0 + 0.5);
-                        albedo_packed = ((rgba.r & 0xffu) << 24u) | ((rgba.g & 0xffu) << 16u) | ((rgba.b & 0xffu) << 8u) | 0xff;
+                        albedo_packed = ((rgba.r & 0xffu) << 24u) | ((rgba.g & 0xffu) << 16u) | ((rgba.b & 0xffu) << 8u) | 0xffu;
 
                         var ws_normal = normalize(weights.x * normal_0 + weights.y * normal_1 + weights.z * normal_2);
 
-                        let tangent = weights.x * tangent_0 + weights.y * tangent_1 + weights.z * tangent_2;
-                        let ws_tangent = normalize(tangent.xyz);
-                        let ws_bitangent = cross(ws_normal, ws_tangent) * tangent.w;
+                        let ws_tangent = normalize((weights.x * tangent_0 + weights.y * tangent_1 + weights.z * tangent_2).xyz);
+                        let ws_bitangent = cross(ws_normal, ws_tangent) * tangent_0.w;
                         let tbn = mat3x3<f32>(
-                        ws_tangent,
-                        ws_bitangent,
-                        ws_normal,
+                            ws_tangent,
+                            ws_bitangent,
+                            ws_normal,
                         );
 
                         let tangent_normal = textureSampleLevel(textures[material.normal_index], tex_sampler, uv, 0.0).rgb * 2.0 - 1.0;
                         ws_normal = normalize(tbn * tangent_normal);
 
-
-                        let nrm = vec3<u32>(clamp(ws_normal * 0.5 + 0.5, vec3(0.0), vec3(1.0)) * 255.0);
-                        normal_packed = ((nrm.r & 0xffu) << 24u) | ((nrm.g & 0xffu) << 16u) | ((nrm.b & 0xffu) << 8u);
+                        normal_packed = encode_normal_octahedral(ws_normal);
                     }
 
-                    // var palette_index = 0u;
-                    // if any(albedo_u > vec3(0)) {
-                    //     // palette_index = textureLoad(palette_lut, vec3<i32>(lut_pos)).r & 0xffu;
-                    //     // palette_index = 1u + in.brick_index % 255u;
-                    //     var min_distance = 1e10;
-                    //     for (var i = 1u; i < 256u; i++) {
-                    //         let rgba = palette.data[i >> 2u][i & 3u];
-                    //         let c = vec3<f32>(
-                    //             f32((rgba >> 24u) & 0xFFu) / 255.0,
-                    //             f32((rgba >> 16u) & 0xFFu) / 255.0,
-                    //             f32((rgba >> 8u) & 0xFFu) / 255.0,
-                    //         );
-                    //         let d = distance(c, albedo.rgb);
-                    //         if d < min_distance {
-                    //             palette_index = i;
-                    //             min_distance = d;
-                    //         }
-                    //     }
-                    // }
-                    textureStore(out_voxels, vec3<i32>(vec3(x, y, z)), vec4<u32>(albedo_packed, normal_packed, 0, 0));
+                    textureStore(out_voxels, vec3<i32>(vec3(x, y, z)), vec4<u32>(albedo_packed, normal_packed, 0u, 0u));
                 }
             }
         }
@@ -282,4 +223,17 @@ fn rand_vec3(seed: u32) -> vec3<f32> {
         f32(h2) / 4294967295.0,
         f32(h3) / 4294967295.0
     );
+}
+
+/// encodes world space normal in lower 21 bits of u32
+// uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
+fn encode_normal_octahedral(normal: vec3<f32>) -> u32 {
+    var n = normal / (abs(normal.x) + abs(normal.y) + abs(normal.z));
+    var nrm = vec2<f32>(0.);
+    nrm.y = n.y * 0.5 + 0.5;
+    nrm.x = n.x * 0.5 + nrm.y;
+    nrm.y = n.x * -0.5 + nrm.y;
+    let sgn = select(0u, 1u, n.z >= 0.0);
+    let res = (u32(nrm.x * 1023.0 + 0.5) << 11u) | (u32(nrm.y * 1023.0 + 0.5) << 1u) | sgn;
+    return res;
 }

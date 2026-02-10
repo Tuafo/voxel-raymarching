@@ -4,7 +4,7 @@ use anyhow::Result;
 use models::{Gltf, Scene};
 use wgpu::util::DeviceExt;
 
-const VOXELS_PER_UNIT: u32 = 15;
+const VOXELS_PER_UNIT: u32 = 25;
 
 pub struct VoxelizeResult {
     pub scene: Scene,
@@ -210,13 +210,23 @@ impl Voxelizer {
                         },
                         count: None,
                     },
+                    // wgpu::BindGroupLayoutEntry {
+                    //     binding: 2,
+                    //     visibility: wgpu::ShaderStages::COMPUTE,
+                    //     ty: wgpu::BindingType::Buffer {
+                    //         ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    //         has_dynamic_offset: false,
+                    //         min_binding_size: None,
+                    //     },
+                    //     count: None,
+                    // },
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::R32Uint,
+                            view_dimension: wgpu::TextureViewDimension::D3,
                         },
                         count: None,
                     },
@@ -413,7 +423,7 @@ struct VoxelizerState<'a> {
 pub struct BrickmapData {
     pub chunk_index: wgpu::Buffer,
     pub chunks: wgpu::Buffer,
-    pub bricks: wgpu::Buffer,
+    pub bricks: wgpu::Texture,
 }
 
 struct PaletteData {
@@ -458,7 +468,8 @@ impl Voxelizer {
                 normal_scale: f32,
                 albedo_index: i32,
                 normal_index: i32,
-                _pad: [f32; 3],
+                double_sided: u32,
+                _pad: [f32; 2],
             }
             // binding 1
             let buffer_materials = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -475,7 +486,8 @@ impl Voxelizer {
                             normal_scale: mat.normal_scale,
                             albedo_index: mat.albedo_index,
                             normal_index: mat.normal_index,
-                            _pad: [0.0; 3],
+                            double_sided: mat.double_sided as u32,
+                            _pad: [0.0; 2],
                         })
                         .collect::<Vec<MaterialBufferEntry>>(),
                 ),
@@ -485,7 +497,7 @@ impl Voxelizer {
             let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u: wgpu::AddressMode::Repeat,
                 address_mode_v: wgpu::AddressMode::Repeat,
-                address_mode_w: wgpu::AddressMode::Repeat,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::MipmapFilterMode::Nearest,
@@ -527,7 +539,7 @@ impl Voxelizer {
                 .textures
                 .iter()
                 .map(|tex| {
-                    let (width, height) = tex.dimensions();
+                    let (width, height) = tex.data.dimensions();
                     let texture = device.create_texture(&wgpu::TextureDescriptor {
                         label: None,
                         size: wgpu::Extent3d {
@@ -538,7 +550,14 @@ impl Voxelizer {
                         mip_level_count: 1,
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        format: match tex.encoding {
+                            models::scene::TextureEncoding::Linear => {
+                                wgpu::TextureFormat::Rgba8Unorm
+                            }
+                            models::scene::TextureEncoding::Srgb => {
+                                wgpu::TextureFormat::Rgba8UnormSrgb
+                            }
+                        },
                         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                         view_formats: &[],
                     });
@@ -549,7 +568,7 @@ impl Voxelizer {
                             origin: wgpu::Origin3d::ZERO,
                             aspect: wgpu::TextureAspect::All,
                         },
-                        &tex,
+                        &tex.data,
                         wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(4 * width),
@@ -729,22 +748,19 @@ impl Voxelizer {
         // create the palette bind group
         // palette is just hand-generated for now, should do some cool generation in a previous compute stage in the future
         // that's based on the actual albedo distribution in the gltf
-        let mut palette = vec![0];
+        let mut palette = vec![glam::Vec4::ZERO];
         for r in 0..6u32 {
             for g in 0..6u32 {
                 for b in 0..6u32 {
-                    let r8 = (r * 255 / 5) & 0xff;
-                    let g8 = (g * 255 / 5) & 0xff;
-                    let b8 = (b * 255 / 5) & 0xff;
-                    let packed = (r8 << 24) | (g8 << 16) | (b8 << 8) | 0xff;
-                    palette.push(packed);
+                    let rgba = (glam::vec3(r as f32, g as f32, b as f32) / 5.0).extend(1.0);
+                    palette.push(rgba);
                 }
             }
         }
         for i in 0..39u32 {
             let v = (i * 255 / 38) & 0xff;
-            let packed = (v << 24) | (v << 16) | (v << 8) | 0xff;
-            palette.push(packed);
+            let rgb = (glam::uvec3(v, v, v).as_vec3() / 255.0).extend(1.0);
+            palette.push(rgb);
         }
 
         let buffer_palette = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -828,12 +844,26 @@ impl Voxelizer {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
-        let buffer_bricks = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("brick data"),
-            size: (state.size_chunks.element_product() as u64) * 2048,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
+        let voxels = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("voxel texture"),
+            size: wgpu::Extent3d {
+                width: 8 * state.size_chunks.x as u32,
+                height: 8 * state.size_chunks.y as u32,
+                depth_or_array_layers: 8 * state.size_chunks.z as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
         });
+        // let buffer_bricks = device.create_buffer(&wgpu::BufferDescriptor {
+        //     label: Some("brick data"),
+        //     size: (state.size_chunks.element_product() as u64) * 2048,
+        //     usage: wgpu::BufferUsages::STORAGE,
+        //     mapped_at_creation: false,
+        // });
         let bg_tree_data = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("voxel brickmap data"),
             layout: &self.bg_layouts.tree_data,
@@ -848,7 +878,13 @@ impl Voxelizer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: buffer_bricks.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&voxels.create_view(
+                        &wgpu::TextureViewDescriptor {
+                            label: Some("voxels"),
+                            usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+                            ..Default::default()
+                        },
+                    )),
                 },
             ],
         });
@@ -908,7 +944,7 @@ impl Voxelizer {
         BrickmapData {
             chunk_index: buffer_chunk_indices,
             chunks: buffer_chunks,
-            bricks: buffer_bricks,
+            bricks: voxels,
         }
     }
 }

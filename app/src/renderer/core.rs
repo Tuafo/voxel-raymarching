@@ -15,7 +15,7 @@ use crate::{
     SizedWindow,
     engine::Engine,
     renderer::{
-        buffers::{CameraDataBuffer, ModelDataBuffer, SceneDataBuffer},
+        buffers::{CameraDataBuffer, ModelDataBuffer},
         loader::Voxelizer,
         quad::Quad,
     },
@@ -45,7 +45,7 @@ struct Uniforms {
     scene: Buffer,
     voxel_chunk_index: Buffer,
     voxel_chunks: Buffer,
-    voxel_bricks: Buffer,
+    voxels: Texture,
     voxel_palette: Buffer,
     camera: Buffer,
     camera_data: CameraDataBuffer,
@@ -114,10 +114,18 @@ impl Renderer {
         let res = Voxelizer::load_gltf(&mut src, device, queue).unwrap();
 
         let uniforms = {
-            let scene_data = SceneDataBuffer::new(&engine.scene, res.chunk_count);
+            #[repr(C)]
+            #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+            struct SceneBufferData {
+                size: glam::UVec3,
+                _pad: u32,
+            }
             let scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("scene data uniform buffer"),
-                contents: bytemuck::cast_slice(&[scene_data]),
+                contents: bytemuck::cast_slice(&[SceneBufferData {
+                    size: res.chunk_count,
+                    _pad: 0,
+                }]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
@@ -139,7 +147,7 @@ impl Renderer {
                 scene,
                 voxel_chunk_index: res.brickmap.chunk_index,
                 voxel_chunks: res.brickmap.chunks,
-                voxel_bricks: res.brickmap.bricks,
+                voxels: res.brickmap.bricks,
                 voxel_palette: res.palette,
                 camera,
                 camera_data,
@@ -159,24 +167,6 @@ impl Renderer {
 
                 device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some("raymarch pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("compute_main"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                })
-            };
-
-            let raymarch_basic = {
-                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("raymarch test shader"),
-                    source: wgpu::ShaderSource::Wgsl(
-                        std::include_str!("../shaders/raymarch_basic.wgsl").into(),
-                    ),
-                });
-
-                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("raymarch test pipeline"),
                     layout: None,
                     module: &shader,
                     entry_point: Some("compute_main"),
@@ -470,7 +460,16 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 6,
-                    resource: self.uniforms.voxel_bricks.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(
+                        &self
+                            .uniforms
+                            .voxels
+                            .create_view(&wgpu::TextureViewDescriptor {
+                                label: Some("voxels"),
+                                usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+                                ..Default::default()
+                            }),
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 7,

@@ -25,9 +25,9 @@ fn compute_main(in: ComputeIn) {
     let diff = max(dot(normal, ws_light_dir), 0.0);
 
     // let color = albedo * (diff + 0.2);
-    var color = albedo * (diff * 0.5 + 0.5);
-    color *= 0.000001;
-    color += normal * 0.5 + 0.5;
+    var color = albedo * (diff * 0.8 + 0.2);
+    // color *= 0.000001;
+    // color += normal;
 
     textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
 }

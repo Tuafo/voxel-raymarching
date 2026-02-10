@@ -43,7 +43,7 @@ impl ModelViewer {
             .textures
             .iter()
             .map(|tex| {
-                let (width, height) = tex.dimensions();
+                let (width, height) = tex.data.dimensions();
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: None,
                     size: wgpu::Extent3d {
@@ -54,7 +54,10 @@ impl ModelViewer {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    format: match tex.encoding {
+                        models::scene::TextureEncoding::Linear => wgpu::TextureFormat::Rgba8Unorm,
+                        models::scene::TextureEncoding::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+                    },
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
                 });
@@ -65,7 +68,7 @@ impl ModelViewer {
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
-                    &tex,
+                    &tex.data,
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
                         bytes_per_row: Some(4 * width),
@@ -390,7 +393,8 @@ impl ModelViewer {
                         normal_scale: mat.normal_scale,
                         albedo_index: mat.albedo_index,
                         normal_index: mat.normal_index,
-                        _pad: [0.0, 0.0, 0.0],
+                        double_sided: mat.double_sided as u32,
+                        _pad: [0.0; 2],
                     })
                     .collect::<Vec<MaterialData>>(),
             ),
@@ -585,5 +589,6 @@ struct MaterialData {
     normal_scale: f32,
     albedo_index: i32,
     normal_index: i32,
-    _pad: [f32; 3],
+    double_sided: u32,
+    _pad: [f32; 2],
 }

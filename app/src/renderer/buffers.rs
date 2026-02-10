@@ -1,38 +1,4 @@
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct SceneDataBuffer {
-    size: [u32; 3],
-    _pad_2: u32,
-    index_bounds: [u32; 3],
-    _pad_1: u32,
-    palette: [u32; 256],
-}
-
-impl SceneDataBuffer {
-    pub fn new(scene: &vox::Scene, index_bounds: glam::UVec3) -> Self {
-        let mut palette = [0; 256];
-        for (i, mat) in scene.palette.iter().enumerate() {
-            let rgba = mat.rgba;
-            palette[i] = (rgba[0] as u32) << 24
-                | (rgba[1] as u32) << 16
-                | (rgba[2] as u32) << 8
-                | rgba[3] as u32;
-        }
-        Self {
-            size: [
-                scene.size.x as u32,
-                scene.size.y as u32,
-                scene.size.z as u32,
-            ],
-            _pad_1: 0,
-            index_bounds: index_bounds.to_array(),
-            _pad_2: 0,
-            palette,
-        }
-    }
-}
-
-#[repr(C)]
 #[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraDataBuffer {
     pub view_proj: [[f32; 4]; 4],

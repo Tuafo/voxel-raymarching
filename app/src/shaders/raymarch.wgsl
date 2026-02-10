@@ -1,14 +1,12 @@
 struct SceneData {
-    _size: vec3<u32>,
     size: vec3<u32>,
-    palette: array<vec4<u32>, 64>
 }
 struct Chunk {
     brick_index: u32,
     mask: array<u32, 16>,
 }
-struct Brick {
-    data: array<u32, 512>,
+struct Palette {
+    data: array<vec4<f32>, 256>,
 }
 @group(0) @binding(0) var out_albedo: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var out_normal: texture_storage_2d<rgba16float, write>;
@@ -16,10 +14,7 @@ struct Brick {
 @group(0) @binding(3) var<uniform> scene: SceneData;
 @group(0) @binding(4) var<storage, read> chunk_indices: array<u32>;
 @group(0) @binding(5) var<storage, read> chunks: array<Chunk>;
-@group(0) @binding(6) var<storage, read> bricks: array<Brick>;
-struct Palette {
-    data: array<vec4<u32>, 64>,
-}
+@group(0) @binding(6) var voxels: texture_storage_3d<r32uint, read>;
 @group(0) @binding(7) var<uniform> palette: Palette;
 
 struct Camera {
@@ -58,34 +53,16 @@ fn compute_main(in: ComputeIn) {
     var depth = 0.0;
 
     if res.hit {
-        // albedo = palette_color(res.material_id).xyz;
-        albedo = res.albedo;
+        albedo = palette_color(res.palette_index);
         normal = normalize(model.normal_transform * res.normal);
 
-        depth = res.distance * dot(ray.direction, camera.forward);
+        depth = res.t_total * dot(ray.direction, camera.forward);
         depth = (depth - camera.near) / (camera.far - camera.near);
-        // let ws_light_dir = normalize(vec3(3.0, -1.0, 10.0));
-
-        // let diff = max(dot(ws_normal, ws_light_dir), 0.0);
-
-        // color = albedo * (diff + 0.2);
-        // color *= 0.000001;
-        // color += res.normal;
     }
 
     textureStore(out_albedo, vec2<i32>(in.id.xy), vec4(albedo, 1.0));
     textureStore(out_normal, vec2<i32>(in.id.xy), vec4(normal, 1.0));
     textureStore(out_depth, vec2<i32>(in.id.xy), vec4(depth, 0.0, 0.0, 1.0));
-}
-
-fn palette_color(index: u32) -> vec4<f32> {
-    let rgba = scene.palette[index >> 2u][index & 3u];
-    return vec4<f32>(
-        f32((rgba >> 24u) & 0xFFu) / 255.0,
-        f32((rgba >> 16u) & 0xFFu) / 255.0,
-        f32((rgba >> 8u) & 0xFFu) / 255.0,
-        f32(rgba & 0xFFu) / 255.0
-    );
 }
 
 struct Ray {
@@ -96,11 +73,10 @@ struct Ray {
 }
 
 struct RaymarchResult {
-    // material_id: u32,
     hit: bool,
-    albedo: vec3<f32>,
+    palette_index: u32,
     normal: vec3<f32>,
-    distance: f32,
+    t_total: f32,
 }
 
 fn raymarch(ray: Ray) -> RaymarchResult {
@@ -141,28 +117,31 @@ fn raymarch(ray: Ray) -> RaymarchResult {
                 let voxel_index = (brick_pos.z << 6u) | (brick_pos.y << 3u) | brick_pos.x;
                 if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
                     // let voxel = (bricks[chunk.brick_index - 1u].data[voxel_index >> 2u] >> ((u32(voxel_index) & 3u) << 3u)) & 0xFFu;
-                    let packed = bricks[chunk.brick_index - 1u].data[voxel_index];
+                    // let packed = bricks[chunk.brick_index - 1u].data[voxel_index];
 
-                    let palette_index = packed & 0xff;
-                    let albedo_packed = palette.data[palette_index >> 2u][palette_index & 3u];
-                    let albedo = vec3<f32>(
-                        f32((albedo_packed >> 24u) & 0xffu),
-                        f32((albedo_packed >> 16u) & 0xffu),
-                        f32((albedo_packed >> 8u) & 0xffu),
-                    ) / 255.0;
+                    var size_bricks = textureDimensions(voxels);
+                    size_bricks.x = (size_bricks.x + 7u) >> 3u;
+                    size_bricks.y = (size_bricks.y + 7u) >> 3u;
+                    size_bricks.z = (size_bricks.z + 7u) >> 3u;
+                    let brick_index = chunk.brick_index - 1u;
+                    let base_index = vec3<u32>(
+                        (brick_index % size_bricks.x) << 3u,
+                        ((brick_index / size_bricks.x) % size_bricks.y) << 3u,
+                        (brick_index / (size_bricks.x * size_bricks.y)) << 3u
+                    );
+                    let packed = textureLoad(voxels, vec3<i32>(base_index) + brick_pos).r;
 
-                    let normal_packed = packed >> 8u;
-                    var normal = normalize(vec3<f32>(
-                        f32((normal_packed >> 16u) & 0xff) / 255.0,
-                        f32((normal_packed >> 8u) & 0xff) / 255.0,
-                        f32(normal_packed & 0xff) / 255.0,
-                    ) * 2.0 - 1.0);
+                    let palette_index = packed & 0xffu;
 
+                    let normal_packed = packed >> 11u;
+                    let normal = decode_normal_octahedral(normal_packed);
                     // let normal = -vec3<f32>(sign(dir)) * vec3<f32>(mask);
 
+                    // this is the total t-value traveled from the camera to the hit voxel
+                    // ray.t_start refers to how far we had to project forward to get into the volume
                     let t_total = ray.t_start + t_entry * 8.0 + min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
 
-                    return RaymarchResult(true, albedo, normal, t_total);
+                    return RaymarchResult(true, palette_index, normal, t_total);
                 }
 
                 prev_ray_length = brick_ray_length;
@@ -243,4 +222,21 @@ fn safe_inverse(v: vec3<f32>) -> vec3<f32> {
         select(1.0 / v.y, 1e10, v.y == 0.0),
         select(1.0 / v.z, 1e10, v.z == 0.0),
     );
+}
+
+fn palette_color(index: u32) -> vec3<f32> {
+    return palette.data[index].rgb;
+}
+
+/// decodes world space normal from lower 21 bits of u32
+// uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
+fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
+    let x = f32((packed >> 11u) & 0x3ffu) / 1023.0;
+    let y = f32((packed >> 1u) & 0x3ffu) / 1023.0;
+    let sgn = f32(packed & 1u) * 2.0 - 1.0;
+    var res = vec3<f32>(0.);
+    res.x = x - y;
+    res.y = x + y - 1.0;
+    res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
+    return normalize(res);
 }

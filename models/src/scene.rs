@@ -9,7 +9,7 @@ pub struct Scene {
     pub nodes: Vec<Node>,
     pub meshes: Vec<Mesh>,
     pub materials: Vec<Material>,
-    pub textures: Vec<image::RgbaImage>,
+    pub textures: Vec<Texture>,
     pub min: glam::Vec3,
     pub max: glam::Vec3,
 }
@@ -22,6 +22,19 @@ pub struct Material {
     pub normal_scale: f32,
     pub albedo_index: i32,
     pub normal_index: i32,
+    pub double_sided: bool,
+}
+
+#[derive(Debug)]
+pub struct Texture {
+    pub data: image::RgbaImage,
+    pub encoding: TextureEncoding,
+}
+
+#[derive(Debug)]
+pub enum TextureEncoding {
+    Linear,
+    Srgb,
 }
 
 #[derive(Debug)]
@@ -65,7 +78,10 @@ impl Scene {
             match image::RgbaImage::from_gltf(&gltf, img, &label) {
                 Ok(texture) => {
                     img_index_map.insert(i as u32, textures.len());
-                    textures.push(texture);
+                    textures.push(Texture {
+                        data: texture,
+                        encoding: TextureEncoding::Linear,
+                    });
                 }
                 Err(err) => {
                     eprintln!("error loading image {} - {}", &label, err);
@@ -77,6 +93,13 @@ impl Scene {
             .iter()
             .map(|m| Material::from_gltf(&gltf, &img_index_map, m))
             .collect::<Vec<Material>>();
+        for material in &materials {
+            if material.albedo_index >= 0 {
+                if let Some(texture) = textures.get_mut(material.albedo_index as usize) {
+                    texture.encoding = TextureEncoding::Srgb;
+                }
+            }
+        }
 
         let mut meshes = Vec::new();
         let mut nodes = Vec::new();
@@ -236,6 +259,7 @@ impl Material {
             .unwrap_or((glam::Vec4::ZERO, 0.5, 0.0));
 
         let normal_scale = (&m.normal_texture).as_ref().map(|n| n.scale).unwrap_or(0.0);
+        let double_sided = m.double_sided;
 
         Self {
             base_albedo,
@@ -244,6 +268,7 @@ impl Material {
             normal_scale,
             albedo_index,
             normal_index,
+            double_sided,
         }
     }
 }
