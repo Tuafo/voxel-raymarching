@@ -63,7 +63,6 @@ impl Input {
                         }
                         ElementState::Released => {}
                     }
-                    if key == "f" {}
                 }
 
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -111,87 +110,8 @@ impl Input {
         self.mouse.right.released = false;
         self.mouse.delta *= 0.0;
         self.mouse.scroll_delta = 0.0;
-
-        // let scroll_px = window.scroll_y().unwrap_or(0.0);
-        // let height_px = window
-        //     .inner_height()
-        //     .ok()
-        //     .and_then(|h| h.as_f64())
-        //     .unwrap_or(f64::MAX);
-        // state.scroll = scroll_px / height_px;
-
-        // state.resized = false;
     }
 }
-
-// impl InputState {
-//     fn on_mouse_down(&mut self, e: &MouseEvent) {
-//         match e.button() {
-//             0 => {
-//                 self.mouse.left.clicked = true;
-//                 self.mouse.left.down = true;
-//             }
-//             2 => {
-//                 self.mouse.right.clicked = true;
-//                 self.mouse.right.down = true;
-//             }
-//             _ => (),
-//         }
-//     }
-//     fn on_mouse_up(&mut self, e: &MouseEvent) {
-//         match e.button() {
-//             0 => {
-//                 self.mouse.left.released = true;
-//                 self.mouse.left.down = false;
-//             }
-//             2 => {
-//                 self.mouse.right.released = true;
-//                 self.mouse.right.down = false;
-//             }
-//             _ => (),
-//         }
-//     }
-//     fn on_mouse_move(&mut self, e: &MouseEvent, canvas: &HtmlCanvasElement) {
-//         let rect = canvas.get_bounding_client_rect();
-//         self.mouse.position.x =
-//             ((e.client_x() as f64 - rect.left()) / (rect.right() - rect.left())) * 2.0 - 1.0;
-//         self.mouse.position.x =
-//             ((e.client_y() as f64 - rect.top()) / (rect.bottom() - rect.top())) * 2.0 - 1.0;
-
-//         let scale = u32::max(canvas.width(), canvas.height()) as f64;
-//         self.mouse.delta.x += e.movement_x() as f64 / scale;
-//         self.mouse.delta.y += e.movement_y() as f64 / scale;
-//     }
-//     fn on_click(&mut self, e: &MouseEvent) {
-//         let _ = e;
-//     }
-//     fn on_scroll(&mut self, e: &WheelEvent) {
-//         self.mouse.scroll_delta = e.delta_y() as f64;
-//     }
-//     fn on_key_down(&mut self, e: &KeyboardEvent) {
-//         if let Some(key) = self.key(&e.key()) {
-//             if !key.down {
-//                 key.pressed = true;
-//                 key.down = true;
-//             }
-//         }
-//     }
-//     fn on_key_up(&mut self, e: &KeyboardEvent) {
-//         if let Some(key) = self.key(&e.key()) {
-//             key.down = false;
-//             key.released = true;
-//         }
-//     }
-//     fn on_blur(&mut self) {
-//         for key in self.keys() {
-//             key.down = false;
-//             key.released = true;
-//         }
-//     }
-//     fn on_resize(&mut self) {
-//         self.resized = true;
-//     }
-// }
 
 #[derive(Debug, Default)]
 pub struct Key {

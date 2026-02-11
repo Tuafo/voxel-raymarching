@@ -8,6 +8,9 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
+const AMBIENT_INTENSITY: f32 = 0.02;
+const DIRECTIONAL_INTENSITY: f32 = 1.0;
+
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
     let dimensions = textureDimensions(tex_normal).xy;
@@ -15,17 +18,17 @@ fn compute_main(in: ComputeIn) {
     let uv = (vec2<f32>(in.id.xy) + 0.5) * texel_size;
 
     // let albedo = textureSampleLevel(tex_albedo, main_sampler, uv, 0.0).rgb * 0.0001 + vec3(1.0);
-    let albedo = textureSampleLevel(tex_albedo, main_sampler, uv, 0.0).rgb;
+    let albedo_sample = textureSampleLevel(tex_albedo, main_sampler, uv, 0.0);
+    let albedo = albedo_sample.rgb;
+    let shadow_factor = albedo_sample.a;
     let normal = normalize(textureSampleLevel(tex_normal, main_sampler, uv, 0.0).rgb);
     let depth = textureSampleLevel(tex_depth, main_sampler, uv, 0.0).rgb;
-
 
     let ws_light_dir = normalize(vec3(3.0, -1.0, 10.0));
 
     let diff = max(dot(normal, ws_light_dir), 0.0);
 
-    // let color = albedo * (diff + 0.2);
-    var color = albedo * (diff * 0.8 + 0.2);
+    var color = albedo * (diff * DIRECTIONAL_INTENSITY * (1.0 - shadow_factor) + AMBIENT_INTENSITY);
     // color *= 0.000001;
     // color += normal;
 

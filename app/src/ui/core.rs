@@ -57,7 +57,7 @@ impl Ui {
             .default_open(true)
             .resizable(true)
             .vscroll(true)
-            .default_size([320.0, 180.0])
+            .default_size([320.0, 480.0])
             .show(self.renderer.context(), |ui| {
                 ui.label(format!(
                     "Display: {}x{}",

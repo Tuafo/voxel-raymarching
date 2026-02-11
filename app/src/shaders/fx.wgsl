@@ -16,24 +16,30 @@ fn vs_main(
     return out;
 }
 
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let color = fxaa(in.position, in.uv);
+    // let color = textureSample(tex_color, main_sampler, in.uv).rgb;
+    return vec4(color, 1.0);
+}
+
 const EDGE_THRESHOLD_MIN: f32 = 0.0312;
 const EDGE_THRESHOLD_MAX: f32 = 0.125;
 const EDGE_STEPS: array<f32, 10> = array<f32, 10>(1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0);
 const SUB_PIXEL_BLENDING: f32 = 1.0;
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fxaa(position: vec4<f32>, uv: vec2<f32>) -> vec3<f32> {
     let texel_size = 1.0 / vec2<f32>(textureDimensions(tex_color).xy);
     let dx = texel_size.x;
     let dy = texel_size.y;
 
-    let color_ctr = textureSample(tex_color, main_sampler, in.uv).rgb;
+    let color_ctr = textureSample(tex_color, main_sampler, uv).rgb;
     let luma_ctr = luma(color_ctr);
 
-    let luma_n = tex_luma(in.uv, vec2(0., dy));
-    let luma_e = tex_luma(in.uv, vec2(dx, 0.));
-    let luma_s = tex_luma(in.uv, vec2(0., -dy));
-    let luma_w = tex_luma(in.uv, vec2(-dx, 0.));
+    let luma_n = tex_luma(uv, vec2(0., dy));
+    let luma_e = tex_luma(uv, vec2(dx, 0.));
+    let luma_s = tex_luma(uv, vec2(0., -dy));
+    let luma_w = tex_luma(uv, vec2(-dx, 0.));
 
     let luma_min = min(min(min(min(luma_ctr, luma_n), luma_e), luma_s), luma_w);
     let luma_max = max(max(max(max(luma_ctr, luma_n), luma_e), luma_s), luma_w);
@@ -41,13 +47,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let luma_range = luma_max - luma_min;
 
     if luma_range < max(EDGE_THRESHOLD_MIN, luma_max * EDGE_THRESHOLD_MAX) {
-        return vec4<f32>(color_ctr, 1.0);
+        return color_ctr;
     }
 
-    let luma_ne = tex_luma(in.uv, vec2(dx, dy));
-    let luma_se = tex_luma(in.uv, vec2(dx, -dy));
-    let luma_nw = tex_luma(in.uv, vec2(-dx, dy));
-    let luma_sw = tex_luma(in.uv, vec2(-dx, -dy));
+    let luma_ne = tex_luma(uv, vec2(dx, dy));
+    let luma_se = tex_luma(uv, vec2(dx, -dy));
+    let luma_nw = tex_luma(uv, vec2(-dx, dy));
+    let luma_sw = tex_luma(uv, vec2(-dx, -dy));
 
     let horizontal = 2.0 * abs(luma_n + luma_s - 2.0 * luma_ctr)
         + abs(luma_ne + luma_se - 2.0 * luma_e)
@@ -75,12 +81,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let grad_threshold = gradient * 0.25;
 
     var p_uv = uv_edge + edge_step * EDGE_STEPS[0];
-    var p_luma_delta = tex_luma(in.uv, p_uv) - edge_luma;
+    var p_luma_delta = tex_luma(uv, p_uv) - edge_luma;
     var reached_end = abs(p_luma_delta) >= grad_threshold;
 
     for (var i = 1; i < 10; i++) {
         p_uv += edge_step * EDGE_STEPS[i];
-        p_luma_delta = tex_luma(in.uv, p_uv) - edge_luma;
+        p_luma_delta = tex_luma(uv, p_uv) - edge_luma;
         reached_end = abs(p_luma_delta) >= grad_threshold;
     }
     if (!reached_end) {
@@ -88,20 +94,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     var n_uv = uv_edge - edge_step * EDGE_STEPS[0];
-    var n_luma_delta = tex_luma(in.uv, n_uv) - edge_luma;
+    var n_luma_delta = tex_luma(uv, n_uv) - edge_luma;
     reached_end = abs(n_luma_delta) >= grad_threshold;
 
     for (var i = 1; i < 10; i++) {
         n_uv -= edge_step * EDGE_STEPS[i];
-        n_luma_delta = tex_luma(in.uv, n_uv) - edge_luma;
+        n_luma_delta = tex_luma(uv, n_uv) - edge_luma;
         reached_end = abs(n_luma_delta) >= grad_threshold;
     }
     if (!reached_end) {
         n_uv -= edge_step * 2.0 * EDGE_STEPS[9];
     }
 
-    let pos_distance = abs(select(p_uv.y - in.uv.y, p_uv.x - in.uv.x, is_horizontal));
-    let neg_distance = abs(select(n_uv.y - in.uv.y, n_uv.x - in.uv.x, is_horizontal));
+    let pos_distance = abs(select(p_uv.y - uv.y, p_uv.x - uv.x, is_horizontal));
+    let neg_distance = abs(select(n_uv.y - uv.y, n_uv.x - uv.x, is_horizontal));
 
     let min_distance = min(pos_distance, neg_distance);
     let delta_sign = select(n_luma_delta >= 0., p_luma_delta >= 0., pos_distance <= neg_distance);
@@ -121,9 +127,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let final_offset = blend_factor * select(vec2(pixel_step, 0.), vec2(0., pixel_step), is_horizontal);
 
-    let color = textureSample(tex_color, main_sampler, in.uv + final_offset).rgb;
+    let color = textureSample(tex_color, main_sampler, uv + final_offset).rgb;
 
-    return vec4<f32>(color, 1.0);
+    return color;
 }
 
 fn tex_luma(uv: vec2<f32>, offset: vec2<f32>) -> f32 {

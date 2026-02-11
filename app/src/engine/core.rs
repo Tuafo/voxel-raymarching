@@ -7,12 +7,10 @@ use crate::{
     engine::{camera::Camera, input::Input, model::Model},
     ui::Ui,
 };
-use vox::Scene;
 
 pub struct Engine {
     pub input: Input,
     pub camera: Camera,
-    pub scene: Scene,
     pub model: Model,
     cursor_locked: bool,
     fullscreen: bool,
@@ -31,19 +29,11 @@ impl Engine {
 
         let camera = Camera::new(window.size());
 
-        let start = Instant::now();
-        let scene = {
-            let src = std::include_bytes!("../../assets/sponza.vox");
-            Scene::load(src).unwrap()
-        };
-        // println!("scene load: {:?}", start.elapsed());
-
         let model = Model::new();
 
         Self {
             input,
             camera,
-            scene,
             model,
             cursor_locked: false,
             fullscreen: false,
@@ -73,7 +63,7 @@ impl Engine {
     }
 
     pub fn frame<'a>(&mut self, delta_time: &Duration, ctx: &'a mut EngineCtx) {
-        if !self.cursor_locked && self.input.mouse.left.clicked {
+        if !self.cursor_locked && self.input.key_down(KeyCode::Space) {
             self.cursor_locked = true;
 
             ctx.window
@@ -97,7 +87,8 @@ impl Engine {
             .update(delta_time, &self.input, self.cursor_locked);
 
         // self.model.rotation += delta_time.as_secs_f64() as f32 * glam::Vec3::ONE;
-        self.model.position = -0.5 * glam::DVec3::ONE;
+        // self.model.position = -0.5 * glam::DVec3::ONE;
+        // self.model.position = glam::dvec3(-20.0, -30.0, -10.0) * 16.0;
         self.model.scale = glam::DVec3::ONE / 16.0;
         // self.model.scale = glam::Vec3::ONE / self.scene.size.max_element() as f32;
         self.model.update();
@@ -105,8 +96,8 @@ impl Engine {
         ctx.ui.state.frame_avg = ctx.ui.state.frame_avg.mul_f64(1.0 - FRAME_AVG_DECAY_ALPHA)
             + delta_time.mul_f64(FRAME_AVG_DECAY_ALPHA);
 
-        ctx.ui.state.voxel_count = self.scene.voxel_count;
-        ctx.ui.state.scene_size = self.scene.size;
+        // ctx.ui.state.voxel_count = self.scene.voxel_count;
+        // ctx.ui.state.scene_size = self.scene.size;
         ctx.ui.state.camera_pos = self.camera.position;
         ctx.ui.state.camera_rotation = self.camera.rotation;
         ctx.ui.state.camera_forward = self.camera.forward;

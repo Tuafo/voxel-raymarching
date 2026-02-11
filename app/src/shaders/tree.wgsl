@@ -7,16 +7,16 @@ struct Chunk {
 @group(0) @binding(2) var voxels: texture_storage_3d<r32uint, write>;
 
 struct Allocator {
-    chunk_count: atomic<u32>,
-    brick_count: atomic<u32>,
+    chunk_count: atomic<u32>, // the total number of chunks allocated
+    brick_count: atomic<u32>, // the total number of bricks allocated. should equal chunk_count
+    voxel_count: atomic<u32>, // total number of voxels in the scene
 }
 struct Palette {
-    data: array<vec4<f32>, 256>,
+    data: array<vec4<f32>, 1024>,
 }
 @group(1) @binding(0) var<storage, read_write> alloc: Allocator;
 @group(1) @binding(1) var raw_voxels: texture_storage_3d<rg32uint, read>;
 @group(1) @binding(2) var<uniform> palette: Palette;
-// @group(1) @binding(3) var palette_lut: texture_storage_3d<r32uint, read>;
 
 struct ComputeIn {
     @builtin(workgroup_id) chunk_pos: vec3<u32>,
@@ -41,24 +41,22 @@ fn compute_main(in: ComputeIn) {
     let albedo_packed = raw.r;
     let normal_packed = raw.g;
 
-    let albedo = vec3<f32>(
+    let albedo_srgb = vec3<f32>(
         f32(albedo_packed >> 24u) / 255.0,
         f32((albedo_packed >> 16u) & 0xffu) / 255.0,
         f32((albedo_packed >> 8u) & 0xffu) / 255.0,
     );
-    // let lut_pos = vec3<u32>(
-    //     (albedo_u.r & 0xffu) >> 3u,
-    //     (albedo_u.g & 0xffu) >> 3u,
-    //     (albedo_u.b & 0xffu) >> 3u,
-    // );
+    let albedo_linear = srgb_to_linear(albedo_srgb);
+    let albedo_oklab = linear_rgb_to_oklab(albedo_linear);
+
     var palette_index = 0u;
     if albedo_packed > 0u {
-        // palette_index = textureLoad(palette_lut, vec3<i32>(lut_pos)).r & 0xffu;
-        // palette_index = 1u + in.brick_index % 255u;
         var min_distance = 1e10;
-        for (var i = 1u; i < 256u; i++) {
+        for (var i = 1u; i < 1024u; i++) {
             let palette_rgb = palette.data[i].rgb;
-            let d = distance(palette_rgb, albedo);
+            let palette_oklab = linear_rgb_to_oklab(palette_rgb);
+
+            let d = distance(palette_oklab, albedo_oklab);
             if d < min_distance {
                 palette_index = i;
                 min_distance = d;
@@ -74,19 +72,20 @@ fn compute_main(in: ComputeIn) {
 
     if in.brick_index == 0u {
         // build mask here
-        var is_empty = true;
+        var brick_voxel_count = 0u;
         var mask = array<u32, 16>();
         for (var i = 0u; i < 512u; i++) {
             if brick.data[i] != 0u {
-                is_empty = false;
+                brick_voxel_count += 1u;
                 mask[i >> 5u] |= 1u << (i & 31u);
             }
         }
-        if is_empty {
+        if brick_voxel_count == 0u {
             brick.is_empty = true;
         } else {
             let chunk_index = atomicAdd(&alloc.chunk_count, 1u);
             let brick_index = atomicAdd(&alloc.brick_count, 1u);
+            atomicAdd(&alloc.voxel_count, brick_voxel_count);
 
             // pointer to the chunk
             chunk_indices[in.chunk_pos.z * in.chunk_count.y * in.chunk_count.x + in.chunk_pos.y * in.chunk_count.x + in.chunk_pos.x] = chunk_index + 1u;
@@ -114,4 +113,19 @@ fn compute_main(in: ComputeIn) {
         return;
     }
     textureStore(voxels, vec3<i32>(brick.base_pos + in.brick_pos), vec4<u32>(packed, 0u, 0u, 0u));
+}
+
+fn srgb_to_linear(srgb: vec3<f32>) -> vec3<f32> {
+    return pow(srgb, vec3(2.2));
+}
+
+fn linear_rgb_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
+    const im1: mat3x3<f32> = mat3x3<f32>(0.4121656120, 0.2118591070, 0.0883097947,
+                              0.5362752080, 0.6807189584, 0.2818474174,
+                              0.0514575653, 0.1074065790, 0.6302613616);
+    const im2: mat3x3<f32> = mat3x3<f32>(0.2104542553, 1.9779984951, 0.0259040371,
+                              0.7936177850, -2.4285922050, 0.7827717662,
+                              -0.0040720468, 0.4505937099, -0.8086757660);
+    let lms = im1 * rgb;
+    return im2 * (sign(lms) * pow(abs(lms), vec3(1.0/3.0)));
 }

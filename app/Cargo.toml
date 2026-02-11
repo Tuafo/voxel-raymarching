@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-vox = { path = "../vox" }
 models = { path = "../models" }
 anyhow = "1.0.100"
 bytemuck = { version = "1.24.0", features = ["derive"] }
@@ -17,3 +16,5 @@ pollster = "0.4.0"
 wgpu = "28.0.0"
 winit = "0.30.12"
 image = { version = "0.25.9", features = ["jpeg", "png"] }
+palette = "0.7.6"
+rand = "0.10.0"

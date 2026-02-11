@@ -1,4 +1,7 @@
-use std::io::{BufRead, Seek};
+use std::{
+    io::{BufRead, Seek},
+    time::Duration,
+};
 
 use anyhow::Result;
 use models::{Gltf, Scene};
@@ -12,6 +15,7 @@ pub struct VoxelizeResult {
     pub brickmap: BrickmapData,
     pub palette: wgpu::Buffer,
     pub chunk_count: glam::UVec3,
+    pub voxel_count: u32,
 }
 
 pub struct Voxelizer {
@@ -398,6 +402,31 @@ impl Voxelizer {
 
         queue.submit([encoder.finish()]);
 
+        #[repr(C)]
+        #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct AllocatorResults {
+            chunk_count: u32,
+            brick_count: u32,
+            voxel_count: u32,
+        }
+        brickmap
+            .alloc_results
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |_| ());
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(20)),
+            })
+            .unwrap();
+        let view = brickmap.alloc_results.get_mapped_range(..);
+        let alloc_results = bytemuck::cast_slice::<_, AllocatorResults>(&*view)[0];
+        dbg!(&alloc_results);
+        println!(
+            "brick usage: {:.2}%",
+            alloc_results.brick_count as f64 * 100.0 / state.size_chunks.element_product() as f64
+        );
+
         let size = state.size_scaled.as_ivec3();
         let chunk_count = state.size_chunks;
         Ok(VoxelizeResult {
@@ -406,6 +435,7 @@ impl Voxelizer {
             brickmap,
             chunk_count,
             palette: palette.buffer_palette,
+            voxel_count: alloc_results.voxel_count,
         })
     }
 }
@@ -424,11 +454,11 @@ pub struct BrickmapData {
     pub chunk_index: wgpu::Buffer,
     pub chunks: wgpu::Buffer,
     pub bricks: wgpu::Texture,
+    alloc_results: wgpu::Buffer,
 }
 
 struct PaletteData {
     buffer_palette: wgpu::Buffer,
-    // tex_palette_lut: wgpu::Texture,
 }
 
 impl Voxelizer {
@@ -540,6 +570,7 @@ impl Voxelizer {
                 .iter()
                 .map(|tex| {
                     let (width, height) = tex.data.dimensions();
+                    // crate::renderer::palette::generate_from_image(&tex.data);
                     let texture = device.create_texture(&wgpu::TextureDescriptor {
                         label: None,
                         size: wgpu::Extent3d {
@@ -554,9 +585,7 @@ impl Voxelizer {
                             models::scene::TextureEncoding::Linear => {
                                 wgpu::TextureFormat::Rgba8Unorm
                             }
-                            models::scene::TextureEncoding::Srgb => {
-                                wgpu::TextureFormat::Rgba8UnormSrgb
-                            }
+                            models::scene::TextureEncoding::Srgb => wgpu::TextureFormat::Rgba8Unorm,
                         },
                         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                         view_formats: &[],
@@ -749,18 +778,21 @@ impl Voxelizer {
         // palette is just hand-generated for now, should do some cool generation in a previous compute stage in the future
         // that's based on the actual albedo distribution in the gltf
         let mut palette = vec![glam::Vec4::ZERO];
-        for r in 0..6u32 {
-            for g in 0..6u32 {
-                for b in 0..6u32 {
-                    let rgba = (glam::vec3(r as f32, g as f32, b as f32) / 5.0).extend(1.0);
+        for r in 0..9u32 {
+            for g in 0..9u32 {
+                for b in 0..9u32 {
+                    let rgba = (glam::vec3(r as f32, g as f32, b as f32) / 8.0).extend(1.0);
                     palette.push(rgba);
                 }
             }
         }
-        for i in 0..39u32 {
-            let v = (i * 255 / 38) & 0xff;
+        for i in 0..69u32 {
+            let v = (i * 255 / 68) & 0xff;
             let rgb = (glam::uvec3(v, v, v).as_vec3() / 255.0).extend(1.0);
             palette.push(rgb);
+        }
+        while palette.len() < 1024 {
+            palette.push(glam::Vec4::ZERO);
         }
 
         let buffer_palette = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -893,8 +925,15 @@ impl Voxelizer {
         // contains both the raw brickmap texture, and atomic counters for building the brickmap
         let buffer_alloc_data = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brickmap allocator data"),
-            size: 8,
-            usage: wgpu::BufferUsages::STORAGE,
+            size: 12,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        // i read from the alloc metadata buffer by copying it here
+        let buffer_alloc_results = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("brickmap allocator result buffer"),
+            size: 12,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let view_voxels = state.voxels.create_view(&wgpu::TextureViewDescriptor {
@@ -941,55 +980,19 @@ impl Voxelizer {
             );
         }
 
+        encoder.copy_buffer_to_buffer(
+            &buffer_alloc_data,
+            0,
+            &buffer_alloc_results,
+            0,
+            buffer_alloc_data.size(),
+        );
+
         BrickmapData {
             chunk_index: buffer_chunk_indices,
             chunks: buffer_chunks,
             bricks: voxels,
+            alloc_results: buffer_alloc_results,
         }
     }
 }
-
-// pub fn voxelize(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<VoxelizeResult> {
-//     let voxels = pack_voxels(device, queue, chunk_count, &texture);
-
-//     Ok(VoxelizeResult {
-//         scene,
-//         texture,
-//         size,
-//         chunk_count,
-//         voxels,
-//     })
-// }
-
-// pub struct PackResult {}
-
-// fn pack_voxels(
-//     device: &wgpu::Device,
-//     queue: &wgpu::Queue,
-//     chunk_count: glam::UVec3,
-//     voxels: &wgpu::Texture,
-// ) -> PackResult {
-//     let bg_layout_packed_data = ;
-//     let bg_layout_alloc_texture =
-
-//     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-//         label: Some("voxel brickmap packing"),
-//         bind_group_layouts: &[&bg_layout_packed_data, &bg_layout_alloc_texture],
-//         immediate_size: 0,
-//     });
-//     let pipeline = {
-//         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-//             label: Some("voxel brickmap packing"),
-//             source: wgpu::ShaderSource::Wgsl(std::include_str!("../shaders/tree.wgsl").into()),
-//         });
-//         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-//             label: Some("voxel packing pipeline"),
-//             layout: Some(&pipeline_layout),
-//             module: &shader,
-//             entry_point: Some("compute_main"),
-//             compilation_options: Default::default(),
-//             cache: None,
-//         })
-//     };
-
-// }

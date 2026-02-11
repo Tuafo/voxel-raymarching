@@ -6,7 +6,7 @@ struct Chunk {
     mask: array<u32, 16>,
 }
 struct Palette {
-    data: array<vec4<f32>, 256>,
+    data: array<vec4<f32>, 1024>,
 }
 @group(0) @binding(0) var out_albedo: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var out_normal: texture_storage_2d<rgba16float, write>;
@@ -26,7 +26,11 @@ struct Camera {
     far: f32,
     fov: f32,
 }
+struct Environment {
+    sun_direction: vec3<f32>,
+}
 @group(1) @binding(0) var<uniform> camera: Camera;
+@group(1) @binding(1) var<uniform> environment: Environment;
 
 struct Model {
     transform: mat4x4<f32>,
@@ -51,6 +55,7 @@ fn compute_main(in: ComputeIn) {
     var albedo = vec3(0.0);
     var normal = vec3(0.0);
     var depth = 0.0;
+    var shadow_factor = 0.0;
 
     if res.hit {
         albedo = palette_color(res.palette_index);
@@ -58,9 +63,13 @@ fn compute_main(in: ComputeIn) {
 
         depth = res.t_total * dot(ray.direction, camera.forward);
         depth = (depth - camera.near) / (camera.far - camera.near);
+
+        if res.in_shadow {
+            shadow_factor = 1.0;
+        }
     }
 
-    textureStore(out_albedo, vec2<i32>(in.id.xy), vec4(albedo, 1.0));
+    textureStore(out_albedo, vec2<i32>(in.id.xy), vec4(albedo, shadow_factor));
     textureStore(out_normal, vec2<i32>(in.id.xy), vec4(normal, 1.0));
     textureStore(out_depth, vec2<i32>(in.id.xy), vec4(depth, 0.0, 0.0, 1.0));
 }
@@ -77,6 +86,59 @@ struct RaymarchResult {
     palette_index: u32,
     normal: vec3<f32>,
     t_total: f32,
+    in_shadow: bool,
+}
+
+fn raymarch_shadow(ray: Ray) -> bool {
+    let origin = ray.origin / 8.0;
+    let dir = ray.direction;
+
+    let step = vec3<i32>(sign(dir));
+    let ray_delta = vec3(1.0) / max(vec3(1e-7), abs(dir));
+
+    var pos = vec3<i32>(floor(origin));
+    var ray_length = ray_delta * (sign(dir) * (vec3<f32>(pos) - origin) + (sign(dir) * 0.5) + 0.5);
+    var prev_ray_length = vec3<f32>(0.0);
+    var mask = vec3(false);
+
+    for (var i = 0u; i < DDA_MAX_STEPS && all(pos < vec3<i32>(scene.size)) && all(pos >= vec3(0)); i++) {
+
+        let chunk_pos_index = u32(pos.z) * scene.size.x * scene.size.y + u32(pos.y) * scene.size.x + u32(pos.x);
+        let chunk_index = chunk_indices[chunk_pos_index];
+
+        if chunk_index != 0u {
+            // now we do dda within the brick
+            var chunk = chunks[chunk_index - 1u];
+
+            let t_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
+            let brick_origin = clamp((origin - vec3<f32>(pos) + dir * (t_entry + 1e-6)) * 8.0, vec3(1e-6), vec3(8.0 - 1e-6));
+
+            var brick_pos = vec3<i32>(floor(brick_origin));
+            var brick_ray_length = ray_delta * (sign(dir) * (floor(brick_origin) - brick_origin) + (sign(dir) * 0.5) + 0.5);
+
+            prev_ray_length = vec3<f32>(0.0);
+
+            while all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)) {
+                let voxel_index = (brick_pos.z << 6u) | (brick_pos.y << 3u) | brick_pos.x;
+                if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
+                    return true;
+                }
+
+                prev_ray_length = brick_ray_length;
+
+                mask = step_mask(brick_ray_length);
+                brick_ray_length += vec3<f32>(mask) * ray_delta;
+                brick_pos += vec3<i32>(mask) * step;
+            }
+        }
+
+        prev_ray_length = ray_length;
+
+        mask = step_mask(ray_length);
+        ray_length += vec3<f32>(mask) * ray_delta;
+        pos += vec3<i32>(mask) * step;
+    }
+    return false;
 }
 
 fn raymarch(ray: Ray) -> RaymarchResult {
@@ -89,7 +151,6 @@ fn raymarch(ray: Ray) -> RaymarchResult {
 
     let step = vec3<i32>(sign(dir));
     let ray_delta = vec3(1.0) / max(vec3(1e-7), abs(dir));
-    // let ray_delta = vec3(1.0) / abs(dir);
 
     var pos = vec3<i32>(floor(origin));
     var ray_length = ray_delta * (sign(dir) * (vec3<f32>(pos) - origin) + (sign(dir) * 0.5) + 0.5);
@@ -129,19 +190,29 @@ fn raymarch(ray: Ray) -> RaymarchResult {
                         ((brick_index / size_bricks.x) % size_bricks.y) << 3u,
                         (brick_index / (size_bricks.x * size_bricks.y)) << 3u
                     );
+
                     let packed = textureLoad(voxels, vec3<i32>(base_index) + brick_pos).r;
 
-                    let palette_index = packed & 0xffu;
-
+                    let palette_index = packed & 0x3ffu;
                     let normal_packed = packed >> 11u;
-                    let normal = decode_normal_octahedral(normal_packed);
+
                     // let normal = -vec3<f32>(sign(dir)) * vec3<f32>(mask);
+                    let normal = decode_normal_octahedral(normal_packed);
 
-                    // this is the total t-value traveled from the camera to the hit voxel
+
+                    // t_total is the total t-value traveled from the camera to the hit voxel
                     // ray.t_start refers to how far we had to project forward to get into the volume
-                    let t_total = ray.t_start + t_entry * 8.0 + min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
+                    let t_brick_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
+                    let t_total = ray.t_start + t_entry * 8.0 + t_brick_entry;
+                    let hit_pos = ray.origin + dir * t_total;
 
-                    return RaymarchResult(true, palette_index, normal, t_total);
+                    let shadow_ray_dir = (model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz;
+                    let shadow_ray_origin = hit_pos + shadow_ray_dir;
+
+                    let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
+                    // let in_shadow = false;
+
+                    return RaymarchResult(true, palette_index, normal, t_total, in_shadow);
                 }
 
                 prev_ray_length = brick_ray_length;
@@ -188,12 +259,12 @@ fn start_ray(pos: vec2<u32>) -> Ray {
     let ws_origin = vp_origin + (uv.x * vp_size.x * right) + (uv.y * vp_size.y * up);
     let ws_direction = normalize(ws_origin - camera.ws_position);
 
-    let ls_origin = ws_origin * 8.0;
-    let ls_direction = ws_direction;
+    let ls_origin = (model.inv_transform * vec4(ws_origin, 1.0)).xyz;
+    let ls_direction = normalize((model.inv_transform * vec4(ws_direction, 0.0)).xyz);
 
     // aabb simple test and project on the scene volume
-    let bd_min = vec3<f32>(0.0);
-    let bd_max = vec3<f32>(scene.size * 8u);
+    let bd_min = (model.inv_transform * vec4<f32>(0.0, 0.0, 0.0, 1.0)).xyz;
+    let bd_max = (model.inv_transform * vec4(vec3<f32>(scene.size * 8u), 1.0)).xyz;
 
     // let inv_dir = 1.0 / safe_vec3(ls_direction);
     let inv_dir = safe_inverse(ls_direction);
