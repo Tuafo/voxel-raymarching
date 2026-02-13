@@ -8,8 +8,8 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-const AMBIENT_INTENSITY: f32 = 0.02;
-const DIRECTIONAL_INTENSITY: f32 = 1.0;
+const AMBIENT_INTENSITY: f32 = 0.2;
+const DIRECTIONAL_INTENSITY: f32 = 0.8;
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
@@ -30,6 +30,9 @@ fn compute_main(in: ComputeIn) {
     var color = albedo * (diff * DIRECTIONAL_INTENSITY * (1.0 - shadow_factor) + AMBIENT_INTENSITY);
     // color *= 0.000001;
     // color += normal;
+    // if shadow_factor > 0.1 {
+    //     color.r = 1.0;
+    // }
 
     textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
 }

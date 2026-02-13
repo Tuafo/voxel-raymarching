@@ -19,65 +19,58 @@ impl Input {
         Self::default()
     }
 
-    pub fn handle_input(
+    pub fn handle_mouse(&mut self, state: &ElementState, button: &winit::event::MouseButton) {
+        if let Some(mb) = match button {
+            winit::event::MouseButton::Left => Some(&mut self.mouse.left),
+            winit::event::MouseButton::Right => Some(&mut self.mouse.right),
+            _ => None,
+        } {
+            if *state == ElementState::Pressed {
+                mb.clicked = true;
+                mb.down = true;
+            } else {
+                mb.released = true;
+                mb.down = false;
+            }
+        }
+    }
+
+    pub fn handle_keyboard(
         &mut self,
         window: &winit::window::Window,
         event_loop: &winit::event_loop::ActiveEventLoop,
-        event: &winit::event::WindowEvent,
+        event: &winit::event::KeyEvent,
     ) {
-        match event {
-            WindowEvent::MouseInput { state, button, .. } => {
-                if let Some(mb) = match button {
-                    winit::event::MouseButton::Left => Some(&mut self.mouse.left),
-                    winit::event::MouseButton::Right => Some(&mut self.mouse.right),
-                    _ => None,
-                } {
-                    if *state == ElementState::Pressed {
-                        mb.clicked = true;
-                        mb.down = true;
-                    } else {
-                        mb.released = true;
-                        mb.down = false;
+        if event.repeat {
+            return;
+        }
+
+        if let winit::keyboard::Key::Character(key) = &event.logical_key {
+            match event.state {
+                ElementState::Pressed => {
+                    if key == "f" {
+                        if window.fullscreen().is_some() {
+                            window.set_fullscreen(None);
+                        } else {
+                            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(
+                                event_loop.primary_monitor(),
+                            )));
+                        }
                     }
+                }
+                ElementState::Released => {}
+            }
+        }
+
+        if let PhysicalKey::Code(code) = event.physical_key {
+            match event.state {
+                ElementState::Pressed => {
+                    self.pressed_keys.insert(code);
+                }
+                ElementState::Released => {
+                    self.pressed_keys.remove(&code);
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.repeat {
-                    return;
-                }
-
-                if let winit::keyboard::Key::Character(key) = &event.logical_key {
-                    match event.state {
-                        ElementState::Pressed => {
-                            if key == "f" {
-                                if window.fullscreen().is_some() {
-                                    window.set_fullscreen(None);
-                                } else {
-                                    window.set_fullscreen(Some(
-                                        winit::window::Fullscreen::Borderless(
-                                            event_loop.primary_monitor(),
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                        ElementState::Released => {}
-                    }
-                }
-
-                if let PhysicalKey::Code(code) = event.physical_key {
-                    match event.state {
-                        ElementState::Pressed => {
-                            self.pressed_keys.insert(code);
-                        }
-                        ElementState::Released => {
-                            self.pressed_keys.remove(&code);
-                        }
-                    }
-                }
-            }
-
-            _ => (),
         }
     }
 

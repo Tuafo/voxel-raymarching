@@ -1,6 +1,6 @@
 use egui_wgpu::wgpu::{CommandEncoder, Device, Queue, StoreOp, TextureFormat, TextureView};
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor, wgpu};
-use egui_winit::State;
+use egui_winit::{EventResponse, State};
 use winit::event::WindowEvent;
 use winit::window::Window;
 
@@ -35,8 +35,12 @@ impl UIRenderer {
         }
     }
 
-    pub fn handle_input(&mut self, window: &Window, event: &WindowEvent) {
-        let _ = self.state.on_window_event(window, event);
+    pub fn handle_window_event(&mut self, window: &Window, event: &WindowEvent) -> EventResponse {
+        self.state.on_window_event(window, event)
+    }
+
+    pub fn handle_mouse_motion(&mut self, delta: (f64, f64)) {
+        self.state.on_mouse_motion(delta);
     }
 
     pub fn begin_frame(&mut self, window: &Window) {

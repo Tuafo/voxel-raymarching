@@ -39,12 +39,15 @@ pub struct Renderer {
     bind_groups: BindGroups,
     timing: Option<RenderTimer>,
     quad: Quad,
+    sun_direction: glam::Vec3,
 }
 
 struct Uniforms {
     scene: Buffer,
     voxel_chunk_index: Buffer,
     voxel_count: u32,
+    allocated_brick_slices: u32,
+    size_chunks: glam::UVec3,
     voxel_chunks: Buffer,
     voxels: Texture,
     voxel_palette: Buffer,
@@ -97,6 +100,7 @@ impl Renderer {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         engine: &Engine,
+        ui: &mut Ui,
     ) -> Self {
         let textures = Textures {
             albedo: None,
@@ -105,6 +109,8 @@ impl Renderer {
             out_color: None,
         };
 
+        // let src = std::include_bytes!("../../assets/san_miguel.glb");
+        // let src = std::include_bytes!("../../assets/bistro.glb");
         let src = std::include_bytes!("../../assets/sponza.glb");
         let mut src = BufReader::new(Cursor::new(src));
         let res = Voxelizer::load_gltf(&mut src, device, queue).unwrap();
@@ -119,7 +125,7 @@ impl Renderer {
             let scene = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("scene data uniform buffer"),
                 contents: bytemuck::cast_slice(&[SceneBufferData {
-                    size: res.chunk_count,
+                    size: res.size_chunks,
                     _pad: 0,
                 }]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -146,13 +152,16 @@ impl Renderer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
+            dbg!(&res.size_chunks, &res.allocated_brick_slices);
             Uniforms {
                 scene,
-                voxel_chunk_index: res.brickmap.chunk_index,
-                voxel_chunks: res.brickmap.chunks,
+                voxel_chunk_index: res.buffer_chunk_indices,
+                voxel_chunks: res.buffer_chunks,
                 voxel_count: res.voxel_count,
-                voxels: res.brickmap.bricks,
-                voxel_palette: res.palette,
+                allocated_brick_slices: res.allocated_brick_slices,
+                size_chunks: res.size_chunks,
+                voxels: res.tex_brickmap,
+                voxel_palette: res.buffer_palette,
                 camera,
                 camera_data,
                 environment,
@@ -285,6 +294,10 @@ impl Renderer {
 
         let quad = Quad::new(device);
 
+        ui.state.sun_azimuth = -2.5;
+        ui.state.sun_altitude = 1.3;
+        ui.state.shadow_bias = 0.001;
+
         let mut _self = Self {
             pipelines,
             bind_groups,
@@ -292,6 +305,7 @@ impl Renderer {
             uniforms,
             timing,
             quad,
+            sun_direction: Default::default(),
         };
 
         _self.update_screen_resources(&window, device);
@@ -507,12 +521,18 @@ impl Renderer {
                 bytemuck::cast_slice(&[self.uniforms.camera_data]),
             );
 
+            self.sun_direction = glam::vec3(
+                ctx.ui.state.sun_altitude.cos() * ctx.ui.state.sun_azimuth.cos(),
+                ctx.ui.state.sun_altitude.cos() * ctx.ui.state.sun_azimuth.sin(),
+                ctx.ui.state.sun_altitude.sin(),
+            )
+            .normalize();
             ctx.queue.write_buffer(
                 &self.uniforms.environment,
                 0,
                 bytemuck::cast_slice(&[EnvironmentDataBuffer {
-                    sun_direction: ctx.ui.state.sun_direction,
-                    _pad: 0.0,
+                    sun_direction: self.sun_direction,
+                    shadow_bias: ctx.ui.state.shadow_bias,
                 }]),
             );
 

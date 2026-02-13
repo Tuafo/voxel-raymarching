@@ -134,7 +134,7 @@ fn compute_main(in: ComputeIn) {
     }
 }
 
-const EXTENT: f32 = 0.6;
+const EXTENT: f32 = 0.5;
 
 fn test_voxel(center: vec3<f32>, p0: vec3<f32>, p1: vec3<f32>, p2: vec3<f32>) -> bool {
     let v0 = p0 - center;

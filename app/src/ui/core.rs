@@ -26,7 +26,9 @@ pub struct UiState {
     pub camera_forward: glam::DVec3,
     pub camera_near: f64,
     pub camera_far: f64,
-    pub sun_direction: glam::Vec3,
+    pub sun_altitude: f32,
+    pub sun_azimuth: f32,
+    pub shadow_bias: f32,
 }
 
 impl Ui {
@@ -45,8 +47,12 @@ impl Ui {
         &mut self,
         window: &winit::window::Window,
         event: &winit::event::WindowEvent,
-    ) {
-        self.renderer.handle_input(window, event);
+    ) -> egui_winit::EventResponse {
+        self.renderer.handle_window_event(window, event)
+    }
+
+    pub fn handle_mouse_motion(&mut self, delta: (f64, f64)) {
+        self.renderer.handle_mouse_motion(delta);
     }
 
     pub fn frame<'a>(&mut self, ctx: &mut UiCtx) {
@@ -56,7 +62,7 @@ impl Ui {
             .default_open(true)
             .resizable(true)
             .vscroll(true)
-            .default_size([320.0, 480.0])
+            .default_size([320.0, 240.0])
             .show(self.renderer.context(), |ui| {
                 ui.label(format!(
                     "Display: {}x{}",
@@ -74,27 +80,31 @@ impl Ui {
                 }
 
                 ui.separator();
+                ui.label(egui::RichText::new("Sun").strong());
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0; // Tight spacing
-
-                    // X Axis (Red)
-                    ui.label(egui::RichText::new("X").color(egui::Color32::from_rgb(200, 60, 60)));
-                    ui.add(egui::DragValue::new(&mut self.state.sun_direction.x).speed(0.1));
-
-                    ui.add_space(10.0); // Space between axes
-
-                    // Y Axis (Green)
-                    ui.label(egui::RichText::new("Y").color(egui::Color32::from_rgb(60, 200, 60)));
-                    ui.add(egui::DragValue::new(&mut self.state.sun_direction.y).speed(0.1));
-
-                    ui.add_space(10.0);
-
-                    // Z Axis (Blue)
-                    ui.label(egui::RichText::new("Z").color(egui::Color32::from_rgb(60, 60, 200)));
-                    ui.add(egui::DragValue::new(&mut self.state.sun_direction.z).speed(0.1));
+                    ui.label("Azimuth");
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.state.sun_azimuth,
+                            -std::f32::consts::PI..=std::f32::consts::PI,
+                        )
+                        .suffix(" rad"),
+                    );
                 });
-                // let mut x = 0.2;
-                // ui.add(egui::Slider::new(&mut x, -1.0..=1.0).text("x"));
+                ui.horizontal(|ui| {
+                    ui.label("Altitutde");
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.state.sun_altitude,
+                            -std::f32::consts::FRAC_PI_2..=std::f32::consts::FRAC_PI_2,
+                        )
+                        .suffix(" rad"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Shadow Bias");
+                    ui.add(egui::Slider::new(&mut self.state.shadow_bias, 0.0..=0.2));
+                });
 
                 ui.separator();
 

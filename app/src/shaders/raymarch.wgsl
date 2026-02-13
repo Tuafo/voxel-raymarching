@@ -28,6 +28,7 @@ struct Camera {
 }
 struct Environment {
     sun_direction: vec3<f32>,
+    shadow_bias: f32,
 }
 @group(1) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(1) var<uniform> environment: Environment;
@@ -43,7 +44,7 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-const DDA_MAX_STEPS: u32 = 1000u;
+const DDA_MAX_STEPS: u32 = 300u;
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
@@ -206,9 +207,13 @@ fn raymarch(ray: Ray) -> RaymarchResult {
                     let t_total = ray.t_start + t_entry * 8.0 + t_brick_entry;
                     let hit_pos = ray.origin + dir * t_total;
 
-                    let shadow_ray_dir = (model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz;
-                    let shadow_ray_origin = hit_pos;
+                    // let shadow_ray_dir = normalize((model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz);
+                    // let shadow_ray_dir = normalize((model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz);
+                    // var shadow_ray_dir = normalize((model.transform * vec4(normalize(environment.sun_direction), 0.0)).xyz);
+                    var shadow_ray_dir = normalize(environment.sun_direction);
+                    let shadow_ray_origin = hit_pos + environment.shadow_bias * hit_normal;
 
+                    // let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
                     let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
                     // let in_shadow = false;
 

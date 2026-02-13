@@ -86,7 +86,8 @@ impl State {
 
         let mut limits = wgpu::Limits::default();
         limits.max_sampled_textures_per_shader_stage = 128;
-        limits.max_binding_array_elements_per_shader_stage = 128;
+        // limits.max_binding_array_elements_per_shader_stage = 128;
+        limits.max_binding_array_elements_per_shader_stage = 406;
         limits.max_compute_invocations_per_workgroup = 512;
 
         let (device, queue) = adapter
@@ -107,7 +108,16 @@ impl State {
 
         let engine = Engine::new(&window);
 
-        let renderer = Renderer::new(Arc::clone(&window), &device, &queue, format, &engine);
+        let mut ui = Ui::new(&window, &device, format);
+
+        let renderer = Renderer::new(
+            Arc::clone(&window),
+            &device,
+            &queue,
+            format,
+            &engine,
+            &mut ui,
+        );
 
         let debug_viewer = if DEBUG_MODELS {
             Some(ModelViewer::new(
@@ -120,8 +130,6 @@ impl State {
         } else {
             None
         };
-
-        let ui = Ui::new(&window, &device, format);
 
         let mut _self = Self {
             window,
@@ -199,8 +207,10 @@ impl State {
         event_loop: &winit::event_loop::ActiveEventLoop,
         event: &winit::event::WindowEvent,
     ) {
-        self.ui.handle_input(&self.window, event);
-        self.engine.handle_input(&self.window, event_loop, event);
+        let ui_resp = self.ui.handle_input(&self.window, event);
+        if ui_resp.consumed {
+            return;
+        }
 
         match event {
             winit::event::WindowEvent::CloseRequested => {
@@ -212,6 +222,14 @@ impl State {
             winit::event::WindowEvent::Resized(_) => {
                 self.handle_resize();
             }
+            winit::event::WindowEvent::MouseInput { state, button, .. } => {
+                self.engine.input.handle_mouse(state, button);
+            }
+            winit::event::WindowEvent::KeyboardInput { event, .. } => {
+                self.engine
+                    .input
+                    .handle_keyboard(&self.window, event_loop, event);
+            }
             _ => {}
         }
     }
@@ -221,7 +239,15 @@ impl State {
         event_loop: &winit::event_loop::ActiveEventLoop,
         event: &winit::event::DeviceEvent,
     ) {
+        match event {
+            winit::event::DeviceEvent::MouseMotion { delta } => {
+                self.ui.handle_mouse_motion(delta.clone());
+            }
+            _ => {}
+        }
+
         self.engine
+            .input
             .handle_device_input(&self.window, event_loop, event);
     }
 }

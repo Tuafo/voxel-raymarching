@@ -40,30 +40,12 @@ impl Engine {
         }
     }
 
-    pub fn handle_input(
-        &mut self,
-        window: &winit::window::Window,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        event: &winit::event::WindowEvent,
-    ) {
-        self.input.handle_input(window, event_loop, event);
-    }
-
-    pub fn handle_device_input(
-        &mut self,
-        window: &winit::window::Window,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        event: &winit::event::DeviceEvent,
-    ) {
-        self.input.handle_device_input(window, event_loop, event);
-    }
-
     pub fn handle_resize(&mut self, window: &winit::window::Window) {
         self.camera.size = window.size();
     }
 
     pub fn frame<'a>(&mut self, delta_time: &Duration, ctx: &'a mut EngineCtx) {
-        if !self.cursor_locked && self.input.key_down(KeyCode::Space) {
+        if !self.cursor_locked && self.input.mouse.left.clicked {
             self.cursor_locked = true;
 
             ctx.window

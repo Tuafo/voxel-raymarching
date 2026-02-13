@@ -2,7 +2,7 @@
 #[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct EnvironmentDataBuffer {
     pub sun_direction: glam::Vec3,
-    pub _pad: f32,
+    pub shadow_bias: f32,
 }
 
 #[repr(C)]
