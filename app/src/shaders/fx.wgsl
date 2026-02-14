@@ -1,6 +1,13 @@
 @group(0) @binding(0) var tex_color: texture_2d<f32>;
 @group(0) @binding(1) var main_sampler: sampler;
 
+struct FrameMetadata {
+    frame_id: u32,
+    taa_enabled: u32,
+    fxaa_enabled: u32,
+}
+@group(1) @binding(0) var<uniform> frame: FrameMetadata;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -18,8 +25,12 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // let color = fxaa(in.position, in.uv);
-    let color = textureSample(tex_color, main_sampler, in.uv).rgb;
+    var color = vec3(0.0);
+    if frame.fxaa_enabled == 0u {
+        color = textureSample(tex_color, main_sampler, in.uv).rgb;
+    } else {
+        color = fxaa(in.position, in.uv);
+    }
     return vec4(color, 1.0);
 }
 

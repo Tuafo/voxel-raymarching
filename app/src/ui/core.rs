@@ -19,6 +19,8 @@ pub struct UiCtx<'a, 'b> {
 pub struct UiState {
     pub frame_avg: Duration,
     pub pass_avg: Vec<(String, Duration)>,
+    pub screen_size: glam::UVec2,
+    pub render_scale: f32,
     pub voxel_count: u32,
     pub scene_size: glam::IVec3,
     pub camera_pos: glam::DVec3,
@@ -29,6 +31,8 @@ pub struct UiState {
     pub sun_altitude: f32,
     pub sun_azimuth: f32,
     pub shadow_bias: f32,
+    pub fxaa: bool,
+    pub taa: bool,
 }
 
 impl Ui {
@@ -39,7 +43,11 @@ impl Ui {
     ) -> Self {
         Self {
             renderer: UIRenderer::new(device, out_format, window),
-            state: UiState::default(),
+            state: UiState {
+                screen_size: window.size(),
+                render_scale: 1.0,
+                ..Default::default()
+            },
         }
     }
 
@@ -64,63 +72,90 @@ impl Ui {
             .vscroll(true)
             .default_size([320.0, 240.0])
             .show(self.renderer.context(), |ui| {
-                ui.label(format!(
-                    "Display: {}x{}",
-                    ctx.window.size().x,
-                    ctx.window.size().y
-                ));
-                ui.label(format!(
-                    "FPS: {:.2}",
-                    1.0 / self.state.frame_avg.as_secs_f64()
-                ));
-                ui.label(format!("Frame: {:.2?}", self.state.frame_avg));
+                egui::Grid::new("grid")
+                    .num_columns(2)
+                    .spacing([40.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Display");
+                        ui.label(format!("{}x{}", ctx.window.size().x, ctx.window.size().y));
+                        ui.end_row();
 
-                for (pass, duration) in &self.state.pass_avg {
-                    ui.label(format!("{}: {:.2?}", pass, duration));
-                }
+                        ui.label("Resolution");
+                        ui.label(format!(
+                            "{}x{}",
+                            self.state.screen_size.x, self.state.screen_size.y
+                        ));
+                        ui.end_row();
 
-                ui.separator();
-                ui.label(egui::RichText::new("Sun").strong());
-                ui.horizontal(|ui| {
-                    ui.label("Azimuth");
-                    ui.add(
-                        egui::Slider::new(
-                            &mut self.state.sun_azimuth,
-                            -std::f32::consts::PI..=std::f32::consts::PI,
-                        )
-                        .suffix(" rad"),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Altitutde");
-                    ui.add(
-                        egui::Slider::new(
-                            &mut self.state.sun_altitude,
-                            -std::f32::consts::FRAC_PI_2..=std::f32::consts::FRAC_PI_2,
-                        )
-                        .suffix(" rad"),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Shadow Bias");
-                    ui.add(egui::Slider::new(&mut self.state.shadow_bias, 0.0..=0.2));
-                });
+                        ui.label("FPS");
+                        ui.label(format!("{:.2}", 1.0 / self.state.frame_avg.as_secs_f64()));
+                        ui.end_row();
 
-                ui.separator();
+                        ui.label("Frame");
+                        ui.label(format!("{:.2?}", self.state.frame_avg));
+                        ui.end_row();
 
-                ui.label(format!("Scene Size: {}", self.state.scene_size));
-                ui.label(format!("Voxels: {}", self.state.voxel_count));
+                        for (pass, duration) in &self.state.pass_avg {
+                            ui.label(pass);
+                            ui.label(format!("{:.2?}", duration));
+                            ui.end_row();
+                        }
 
-                ui.separator();
+                        ui.label(egui::RichText::new("Render").strong());
+                        ui.end_row();
 
-                ui.label(format!("Camera Position: {:.2}", self.state.camera_pos));
-                ui.label(format!(
-                    "Camera Rotation: {:.2}",
-                    (self.state.camera_rotation * 180.0 / PI) % 360.0,
-                ));
-                ui.label(format!("View Forward: {:.2}", self.state.camera_forward));
-                ui.label(format!("Camera Near: {:.2}", self.state.camera_near));
-                ui.label(format!("Camera Far: {:.2}", self.state.camera_far));
+                        ui.label("Scale");
+                        ui.add(
+                            egui::Slider::new(&mut self.state.render_scale, 0.125..=2.0)
+                                .step_by(0.125)
+                                .suffix(" x"),
+                        );
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Sun").strong());
+                        ui.end_row();
+
+                        ui.label("Azimuth");
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.state.sun_azimuth,
+                                -std::f32::consts::PI..=std::f32::consts::PI,
+                            )
+                            .suffix(" rad"),
+                        );
+                        ui.end_row();
+
+                        ui.label("Altitutde");
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.state.sun_altitude,
+                                -std::f32::consts::FRAC_PI_2..=std::f32::consts::FRAC_PI_2,
+                            )
+                            .suffix(" rad"),
+                        );
+                        ui.end_row();
+
+                        ui.label("Shadow Bias");
+                        ui.add(egui::Slider::new(&mut self.state.shadow_bias, 0.0..=0.2));
+                        ui.end_row();
+
+                        ui.separator();
+
+                        ui.label(format!("Scene Size: {}", self.state.scene_size));
+                        ui.label(format!("Voxels: {}", self.state.voxel_count));
+
+                        ui.separator();
+
+                        ui.label(format!("Camera Position: {:.2}", self.state.camera_pos));
+                        ui.label(format!(
+                            "Camera Rotation: {:.2}",
+                            (self.state.camera_rotation * 180.0 / PI) % 360.0,
+                        ));
+                        ui.label(format!("View Forward: {:.2}", self.state.camera_forward));
+                        ui.label(format!("Camera Near: {:.2}", self.state.camera_near));
+                        ui.label(format!("Camera Far: {:.2}", self.state.camera_far));
+                    });
             });
 
         self.renderer.render(

@@ -15,6 +15,8 @@ struct Camera {
 }
 struct FrameMetadata {
     frame_id: u32,
+    taa_enabled: u32,
+    fxaa_enabled: u32,
 }
 @group(0) @binding(0) var<uniform> environment: Environment;
 @group(0) @binding(1) var<uniform> frame: FrameMetadata;
@@ -41,47 +43,9 @@ fn compute_main(in: ComputeIn) {
     let texel_size = 1.0 / vec2<f32>(dimensions);
     let uv = vec2<f32>(in.id.xy) * texel_size;
 
-    // let albedo_sample = textureSampleLevel(tex_albedo, main_sampler, uv, 0.0);
-    // let albedo = albedo_sample.rgb;
-    // let shadow_factor = albedo_sample.a;
-    // let normal = normalize(textureSampleLevel(tex_normal, main_sampler, uv, 0.0).rgb);
-    // let depth = textureSampleLevel(tex_depth, main_sampler, uv, 0.0).rgb;
-    // let velocity = textureSampleLevel(tex_velocity, main_sampler, uv, 0.0).rg;
-
-    // let ws_light_dir = normalize(vec3(3.0, -1.0, 10.0));
-
-    // let diff = max(dot(normal, ws_light_dir), 0.0);
-
-    // var color = albedo * (diff * DIRECTIONAL_INTENSITY * (1.0 - shadow_factor) + AMBIENT_INTENSITY);
-    // color *= 0.000001;
-    // color += normal;
-    // if shadow_factor > 0.1 {
-    //     color.r = 1.0;
-    // }
-
-    // var src_sample_total = vec3<f32>(0.0);
-    // var src_weight = 0.0;
-    // var neighborhood_min = vec3<f32>(1000.0);
-    // var neighborhood_max = vec3<f32>(-1000.0);
-    // var m1 = vec3<f32>(0.0);
-    // var m2 = vec3<f32>(0.0);
-    // var closest_depth = 0.0;
-    // var closest_depth_pixel = vec2<i32>(0);
-    // for (var dx = -1; dx >= 1; dx += 1) {
-    //     for (var dy = -1; dy >= 1; dy += 1) {
-    //         for (var dz = -1; dz >= 1; dz += 1) {
-    //             let pixel_pos = clamp(vec2<i32>(in.id.xy) + vec2<i32>(dx, dy), vec2(0), vec2<i32>(dimensions) - 1);
-
-    //             let neighbor = max(vec3(0.0),
-    //         }
-    //     }
-    // }
-
-    // let prev_color = textureSampleLevel(acc_color, main_sampler, uv, 0.0).rgb;
-    // color = color * ACC_ALPHA + prev_color * (1.0 - ACC_ALPHA);
     let pos = vec2<i32>(in.id.xy);
 
-    if frame.frame_id == 0u {
+    if frame.frame_id == 0u || frame.taa_enabled == 0u {
         let cur_color = textureLoad(tex_color, vec2<i32>(in.id.xy)).rgb;
         textureStore(out_color, pos, vec4(cur_color, 1.0));
         return;
@@ -141,7 +105,7 @@ fn compute_main(in: ComputeIn) {
     let min_c = mu - gamma * sigma;
     let max_c = mu + gamma * sigma;
 
-    // acc_sample = clip_aabb(min_c, max_c, clamp(acc_sample, neighborhood_min, neighborhood_max));
+    acc_sample = clip_aabb(min_c, max_c, clamp(acc_sample, neighborhood_min, neighborhood_max));
 
     let luma_src = luminance(src_sample);
     let luma_acc = luminance(acc_sample);

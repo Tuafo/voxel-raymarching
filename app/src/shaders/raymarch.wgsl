@@ -79,7 +79,7 @@ fn compute_main(in: ComputeIn) {
 
         let cs_prev_pos = environment.prev_camera.view_proj * vec4<f32>(world_pos, 1.0);
         let ndc_prev = cs_prev_pos.xy / cs_prev_pos.w;
-        let uv_prev = vec2(ndc_prev.x * 0.5 + 0.5, (-ndc_prev.y) * 0.5 + 0.5);
+        let uv_prev = vec2(ndc_prev.x, -ndc_prev.y);
         // var prev_uv = ndc_prev * 0.5 + 0.5;
         // prev_uv.y = 1.0 - prev_uv.y;
 

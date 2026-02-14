@@ -168,7 +168,7 @@ impl State {
                 queue: &self.queue,
                 surface: &self.surface,
                 format: &self.format,
-                engine: &self.engine,
+                engine: &mut self.engine,
                 ui: &mut self.ui,
             });
         } else {
@@ -180,7 +180,7 @@ impl State {
                     queue: &self.queue,
                     surface: &self.surface,
                     format: &self.format,
-                    engine: &self.engine,
+                    engine: &mut self.engine,
                     ui: &mut self.ui,
                 },
             );

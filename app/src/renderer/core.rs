@@ -24,7 +24,7 @@ pub struct RendererCtx<'a> {
     pub queue: &'a wgpu::Queue,
     pub surface: &'a wgpu::Surface<'static>,
     pub format: &'a wgpu::TextureFormat,
-    pub engine: &'a Engine,
+    pub engine: &'a mut Engine,
     pub ui: &'a mut Ui,
 }
 
@@ -39,6 +39,8 @@ pub struct Renderer {
     timing: Option<RenderTimer>,
     quad: Quad,
     frame_id: u32,
+    size: glam::UVec2,
+    render_scale: f32,
     sun_direction: glam::Vec3,
     prev_camera: Option<CameraDataBuffer>,
 }
@@ -66,6 +68,7 @@ struct BindGroupLayouts {
     taa_input: wgpu::BindGroupLayout,
     taa_output: wgpu::BindGroupLayout,
     fx_input: wgpu::BindGroupLayout,
+    fx_per_frame: wgpu::BindGroupLayout,
 }
 
 struct BindGroups {
@@ -79,6 +82,7 @@ struct BindGroups {
     taa_output_b: Option<wgpu::BindGroup>,
     fx_input_a: Option<wgpu::BindGroup>,
     fx_input_b: Option<wgpu::BindGroup>,
+    fx_per_frame: wgpu::BindGroup,
 }
 
 struct Textures {
@@ -414,6 +418,19 @@ impl Renderer {
                     },
                 ],
             }),
+            fx_per_frame: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("fx_per_frame"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            }),
         };
 
         let pipeline_layouts = PipelineLayouts {
@@ -442,7 +459,7 @@ impl Renderer {
             }),
             fx: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("fx"),
-                bind_group_layouts: &[&bg_layouts.fx_input],
+                bind_group_layouts: &[&bg_layouts.fx_input, &bg_layouts.fx_per_frame],
                 immediate_size: 0,
             }),
         };
@@ -599,7 +616,7 @@ impl Renderer {
             }),
             frame_metadata: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("frame_metadata"),
-                size: 4,
+                size: 12,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -679,6 +696,14 @@ impl Renderer {
             taa_output_b: None,
             fx_input_a: None,
             fx_input_b: None,
+            fx_per_frame: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fx_per_frame"),
+                layout: &bg_layouts.fx_per_frame,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffers.frame_metadata.as_entire_binding(),
+                }],
+            }),
         };
 
         let timing = device
@@ -703,6 +728,8 @@ impl Renderer {
             timing,
             quad,
             frame_id: 0,
+            render_scale: 1.0,
+            size: Default::default(),
             sun_direction: Default::default(),
             prev_camera: None,
         };
@@ -717,15 +744,18 @@ impl Renderer {
     }
 
     fn update_screen_resources(&mut self, window: &winit::window::Window, device: &wgpu::Device) {
-        let size = window.size();
+        self.size = window
+            .size()
+            .map(|x| ((x as f32) * self.render_scale).ceil() as u32);
+        let size = wgpu::Extent3d {
+            width: self.size.x,
+            height: self.size.y,
+            depth_or_array_layers: 1,
+        };
 
         self.textures.gbuffer_albedo = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gbuffer_albedo"),
-            size: wgpu::Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: 1,
-            },
+            size,
             sample_count: 1,
             format: wgpu::TextureFormat::Rgba16Float,
             dimension: wgpu::TextureDimension::D2,
@@ -742,11 +772,7 @@ impl Renderer {
 
         self.textures.gbuffer_normal = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gbuffer_normal"),
-            size: wgpu::Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: 1,
-            },
+            size,
             sample_count: 1,
             format: wgpu::TextureFormat::Rgba16Float,
             dimension: wgpu::TextureDimension::D2,
@@ -763,11 +789,7 @@ impl Renderer {
 
         self.textures.gbuffer_depth = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gbuffer_depth"),
-            size: wgpu::Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: 1,
-            },
+            size,
             sample_count: 1,
             format: wgpu::TextureFormat::R32Float,
             dimension: wgpu::TextureDimension::D2,
@@ -784,11 +806,7 @@ impl Renderer {
 
         self.textures.gbuffer_velocity = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gbuffer_velocity"),
-            size: wgpu::Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: 1,
-            },
+            size,
             sample_count: 1,
             format: wgpu::TextureFormat::Rgba16Float,
             dimension: wgpu::TextureDimension::D2,
@@ -808,11 +826,7 @@ impl Renderer {
 
         self.textures.deferred_output = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("deferred_output"),
-            size: wgpu::Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: 1,
-            },
+            size,
             sample_count: 1,
             format: wgpu::TextureFormat::Rgba16Float,
             dimension: wgpu::TextureDimension::D2,
@@ -829,11 +843,7 @@ impl Renderer {
 
         self.textures.out_color_a = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("out_color_a"),
-            size: wgpu::Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: 1,
-            },
+            size,
             sample_count: 1,
             format: wgpu::TextureFormat::Rgba16Float,
             dimension: wgpu::TextureDimension::D2,
@@ -864,11 +874,7 @@ impl Renderer {
 
         self.textures.out_color_b = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("out_color_b"),
-            size: wgpu::Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: 1,
-            },
+            size,
             sample_count: 1,
             format: wgpu::TextureFormat::Rgba16Float,
             dimension: wgpu::TextureDimension::D2,
@@ -1040,10 +1046,15 @@ impl Renderer {
     }
 
     pub fn frame<'a>(&mut self, delta_time: &Duration, ctx: &'a mut RendererCtx) {
-        let size = ctx.window.size();
+        if ctx.ui.state.render_scale != self.render_scale {
+            self.render_scale = ctx.ui.state.render_scale;
+            self.update_screen_resources(ctx.window, ctx.device);
+            ctx.ui.state.screen_size = self.size;
+        }
 
         // update uniform buffers
         {
+            ctx.engine.camera.size = self.size;
             let camera = CameraDataBuffer::from_camera(&ctx.engine.camera);
             let prev_camera = match self.prev_camera {
                 Some(c) => c,
@@ -1075,7 +1086,11 @@ impl Renderer {
             ctx.queue.write_buffer(
                 &self.buffers.frame_metadata,
                 0,
-                bytemuck::cast_slice(&[self.frame_id]),
+                bytemuck::cast_slice(&[
+                    self.frame_id,
+                    ctx.ui.state.taa as u32,
+                    ctx.ui.state.fxaa as u32,
+                ]),
             );
         }
 
@@ -1109,7 +1124,7 @@ impl Renderer {
             pass.set_bind_group(2, &self.bind_groups.raymarch_per_frame, &[]);
 
             pass.insert_debug_marker("raymarch");
-            pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
         }
 
         // deferred pass
@@ -1130,7 +1145,7 @@ impl Renderer {
             pass.set_bind_group(0, &self.bind_groups.deferred_gbuffer, &[]);
 
             pass.insert_debug_marker("deferred");
-            pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
         }
 
         // taa pass
@@ -1154,7 +1169,7 @@ impl Renderer {
             );
 
             pass.insert_debug_marker("taa");
-            pass.dispatch_workgroups(size.x.div_ceil(8), size.y.div_ceil(8), 1);
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
         }
 
         // post fx pass
@@ -1192,6 +1207,7 @@ impl Renderer {
                 },
                 &[],
             );
+            pass.set_bind_group(1, &self.bind_groups.fx_per_frame, &[]);
             pass.set_index_buffer(self.quad.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_vertex_buffer(0, self.quad.vertex_buffer.slice(..));
 
