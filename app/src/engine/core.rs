@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use winit::keyboard::KeyCode;
 
@@ -13,7 +13,6 @@ pub struct Engine {
     pub camera: Camera,
     pub model: Model,
     cursor_locked: bool,
-    fullscreen: bool,
 }
 
 pub struct EngineCtx<'a> {
@@ -36,7 +35,6 @@ impl Engine {
             camera,
             model,
             cursor_locked: false,
-            fullscreen: false,
         }
     }
 

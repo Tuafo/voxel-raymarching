@@ -23,6 +23,8 @@ struct Environment {
     shadow_bias: f32,
     camera: Camera,
     prev_camera: Camera,
+    jitter: vec2<f32>,
+    prev_jitter: vec2<f32>,
 }
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -38,9 +40,14 @@ struct Model {
     inv_transform: mat4x4<f32>,
     normal_transform: mat3x3<f32>,
 }
+struct FrameMetadata {
+    frame_id: u32,
+    taa_enabled: u32,
+    fxaa_enabled: u32,
+}
 @group(2) @binding(0) var<uniform> environment: Environment;
-// @group(2) @binding(1) var<uniform> environment: Environment;
-@group(2) @binding(1) var<uniform> model: Model;
+@group(2) @binding(1) var<uniform> frame: FrameMetadata;
+@group(2) @binding(2) var<uniform> model: Model;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
@@ -65,9 +72,9 @@ fn compute_main(in: ComputeIn) {
         albedo = palette_color(res.palette_index);
         normal = normalize(model.normal_transform * res.normal);
 
-        let world_pos = (model.transform * vec4<f32>(res.local_pos, 1.0)).xyz;
+        let world_pos = model.transform * vec4<f32>(res.local_pos, 1.0);
 
-        depth = dot(world_pos - environment.camera.ws_position, environment.camera.forward);
+        depth = dot(world_pos.xyz - environment.camera.ws_position, environment.camera.forward);
         depth = (depth - environment.camera.near) / (environment.camera.far - environment.camera.near);
 
         if res.in_shadow {
@@ -75,17 +82,20 @@ fn compute_main(in: ComputeIn) {
         }
 
         let dimensions = textureDimensions(out_albedo).xy;
-        let uv = (vec2<f32>(in.id.xy) + 0.5) / vec2<f32>(dimensions);
+        let texel_size = 1.0 / vec2<f32>(dimensions);
 
-        let cs_prev_pos = environment.prev_camera.view_proj * vec4<f32>(world_pos, 1.0);
-        let ndc_prev = cs_prev_pos.xy / cs_prev_pos.w;
-        let uv_prev = vec2(ndc_prev.x, -ndc_prev.y);
-        // var prev_uv = ndc_prev * 0.5 + 0.5;
-        // prev_uv.y = 1.0 - prev_uv.y;
+        let clip_pos = environment.camera.view_proj * world_pos;
+        let ndc = clip_pos.xy / clip_pos.w;
+        let uv = ndc * vec2(0.5, -0.5) + 0.5;
 
-        velocity = uv - uv_prev;
-        // velocity = res.local_pos.xy * 0.01;
-        // velocity = world_pos.xy;
+        let prev_clip_pos = environment.prev_camera.view_proj * world_pos;
+        let prev_ndc = prev_clip_pos.xy / prev_clip_pos.w;
+        let prev_uv = prev_ndc * vec2(0.5, -0.5) + 0.5;
+
+        // velocity = (uv - environment.jitter * texel_size) - (prev_uv - environment.prev_jitter * texel_size);
+        velocity = uv - prev_uv;
+        // velocity -= environment.jitter * texel_size;
+        // velocity -= environment.prev_jitter * texel_size;
     }
 
     textureStore(out_albedo, vec2<i32>(in.id.xy), vec4(albedo, shadow_factor));
@@ -204,11 +214,6 @@ fn raymarch(ray: Ray) -> RaymarchResult {
             while all(brick_pos >= vec3(0)) && all(brick_pos < vec3(8)) {
                 let voxel_index = (brick_pos.z << 6u) | (brick_pos.y << 3u) | brick_pos.x;
                 if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
-
-                    // var size_bricks = textureDimensions(voxels);
-                    // size_bricks.x = (size_bricks.x + 7u) >> 3u;
-                    // size_bricks.y = (size_bricks.y + 7u) >> 3u;
-                    // size_bricks.z = (size_bricks.z + 7u) >> 3u;
                     let brick_index = i32(chunk_index - 1u);
                     let base_index = vec3<i32>(
                         (brick_index % size_chunks.x) << 3u,
@@ -305,22 +310,14 @@ fn step_mask(ray_length: vec3<f32>) -> vec3<bool> {
 fn start_ray(pos: vec2<u32>) -> Ray {
     let camera = environment.camera;
     let dimensions = textureDimensions(out_albedo).xy;
-    // let uv = (vec2<f32>(pos) + 0.5) / vec2<f32>(dimensions);
 
-    // let forward = normalize(camera.forward);
-    // let right = normalize(cross(vec3<f32>(0.0, 0.0, -1.0), forward));
-    // let up = normalize(cross(forward, right));
-
-    // let vp_size = 2.0 * vec2<f32>(
-    //     camera.near * tan(0.5 * camera.fov),
-    //     camera.near * tan(0.5 * camera.fov) * f32(dimensions.y) / f32(dimensions.x),
-    // );
-    // let vp_origin = (camera.ws_position + forward * camera.near) - (0.5 * vp_size.x * right) - (0.5 * vp_size.y * up);
-    // let ws_origin = vp_origin + (uv.x * vp_size.x * right) + (uv.y * vp_size.y * up);
-    // let ws_direction = normalize(ws_origin - camera.ws_position);
-    //
-
-    let uv = (vec2<f32>(pos) + 0.5) / vec2<f32>(dimensions);
+    var pixel_pos = vec2<f32>(pos);
+    if frame.taa_enabled == 0u {
+        pixel_pos += 0.5;
+    } else {
+        pixel_pos += environment.jitter;
+    }
+    let uv = pixel_pos / vec2<f32>(dimensions);
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0);
 
     let ts_near = camera.inv_view_proj * vec4<f32>(ndc, 0.0, 1.0);

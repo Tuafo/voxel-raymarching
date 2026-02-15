@@ -33,6 +33,8 @@ pub struct UiState {
     pub shadow_bias: f32,
     pub fxaa: bool,
     pub taa: bool,
+    pub limit_fps: bool,
+    pub max_fps: u32,
 }
 
 impl Ui {
@@ -45,7 +47,11 @@ impl Ui {
             renderer: UIRenderer::new(device, out_format, window),
             state: UiState {
                 screen_size: window.size(),
-                render_scale: 1.0,
+                render_scale: 0.5,
+                taa: true,
+                fxaa: false,
+                limit_fps: true,
+                max_fps: 60,
                 ..Default::default()
             },
         }
@@ -70,13 +76,17 @@ impl Ui {
             .default_open(true)
             .resizable(true)
             .vscroll(true)
-            .default_size([320.0, 240.0])
+            .default_width(240.0)
+            .default_height(480.0)
             .show(self.renderer.context(), |ui| {
                 egui::Grid::new("grid")
                     .num_columns(2)
                     .spacing([40.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Stats").strong());
+                        ui.end_row();
+
                         ui.label("Display");
                         ui.label(format!("{}x{}", ctx.window.size().x, ctx.window.size().y));
                         ui.end_row();
@@ -102,7 +112,18 @@ impl Ui {
                             ui.end_row();
                         }
 
+                        ui.end_row();
                         ui.label(egui::RichText::new("Render").strong());
+                        ui.end_row();
+
+                        ui.label("Cap FPS");
+                        ui.checkbox(&mut self.state.limit_fps, "");
+                        ui.end_row();
+
+                        ui.label("Max FPS");
+                        ui.add(
+                            egui::Slider::new(&mut self.state.max_fps, 10..=999).logarithmic(true),
+                        );
                         ui.end_row();
 
                         ui.label("Scale");
@@ -113,7 +134,28 @@ impl Ui {
                         );
                         ui.end_row();
 
-                        ui.label(egui::RichText::new("Sun").strong());
+                        ui.label("FXAA");
+                        ui.checkbox(&mut self.state.fxaa, "");
+                        ui.end_row();
+
+                        ui.label("TAA");
+                        ui.checkbox(&mut self.state.taa, "");
+                        ui.end_row();
+
+                        ui.end_row();
+                        ui.label(egui::RichText::new("Scene").strong());
+                        ui.end_row();
+
+                        ui.label("Bounds");
+                        ui.label(format!("{}", self.state.scene_size));
+                        ui.end_row();
+
+                        ui.label("Voxels");
+                        ui.label(format!("{}", self.state.voxel_count));
+                        ui.end_row();
+
+                        ui.end_row();
+                        ui.label(egui::RichText::new("Lighting").strong());
                         ui.end_row();
 
                         ui.label("Azimuth");
@@ -140,21 +182,32 @@ impl Ui {
                         ui.add(egui::Slider::new(&mut self.state.shadow_bias, 0.0..=0.2));
                         ui.end_row();
 
-                        ui.separator();
+                        ui.end_row();
+                        ui.label(egui::RichText::new("Camera").strong());
+                        ui.end_row();
 
-                        ui.label(format!("Scene Size: {}", self.state.scene_size));
-                        ui.label(format!("Voxels: {}", self.state.voxel_count));
+                        ui.label("Position");
+                        ui.label(format!("{:.2}", self.state.camera_pos));
+                        ui.end_row();
 
-                        ui.separator();
-
-                        ui.label(format!("Camera Position: {:.2}", self.state.camera_pos));
+                        ui.label("Rotation");
                         ui.label(format!(
-                            "Camera Rotation: {:.2}",
+                            "{:.2}",
                             (self.state.camera_rotation * 180.0 / PI) % 360.0,
                         ));
-                        ui.label(format!("View Forward: {:.2}", self.state.camera_forward));
-                        ui.label(format!("Camera Near: {:.2}", self.state.camera_near));
-                        ui.label(format!("Camera Far: {:.2}", self.state.camera_far));
+                        ui.end_row();
+
+                        ui.label("Forward");
+                        ui.label(format!("{:.2}", self.state.camera_forward));
+                        ui.end_row();
+
+                        ui.label("Near");
+                        ui.label(format!("{:.2}", self.state.camera_near));
+                        ui.end_row();
+
+                        ui.label("Far");
+                        ui.label(format!("{:.2}", self.state.camera_far));
+                        ui.end_row();
                     });
             });
 

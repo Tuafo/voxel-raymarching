@@ -44,6 +44,28 @@ impl ApplicationHandler for Program {
         state.handle_input(event_loop, &event);
     }
 
+    fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let state = self.state.as_mut().unwrap();
+
+        if !state.ui.state.limit_fps {
+            return;
+        }
+
+        let now = Instant::now();
+        let prev_time = state.prev_time.unwrap_or(now);
+        let elapsed = now - prev_time;
+        let targ_frame_time =
+            std::time::Duration::from_secs_f64(1.0 / (state.ui.state.max_fps as f64));
+
+        if elapsed >= targ_frame_time {
+            state.window.request_redraw();
+        } else {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                now + targ_frame_time - elapsed,
+            ));
+        }
+    }
+
     fn device_event(
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
@@ -86,8 +108,9 @@ impl State {
 
         let mut limits = wgpu::Limits::default();
         limits.max_sampled_textures_per_shader_stage = 128;
-        // limits.max_binding_array_elements_per_shader_stage = 128;
-        limits.max_binding_array_elements_per_shader_stage = 406;
+        // limits.max_binding_array_elements_per_shader_stage = 406;
+        limits.max_binding_array_elements_per_shader_stage = 128;
+        limits.max_storage_textures_per_shader_stage = 5;
         limits.max_compute_invocations_per_workgroup = 512;
 
         let (device, queue) = adapter
@@ -189,7 +212,10 @@ impl State {
         self.engine.input.frame();
 
         self.prev_time = Some(time);
-        self.window.request_redraw();
+
+        if !self.ui.state.limit_fps {
+            self.window.request_redraw();
+        }
     }
 
     fn handle_resize(&mut self) {

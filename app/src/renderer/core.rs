@@ -243,6 +243,16 @@ impl Renderer {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             }),
             deferred_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -261,47 +271,41 @@ impl Renderer {
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
                         },
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
                         },
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::R32Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
                         },
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
                         },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                 ],
@@ -672,6 +676,10 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
+                        resource: buffers.frame_metadata.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
                         resource: buffers.model.as_entire_binding(),
                     },
                 ],
@@ -716,6 +724,8 @@ impl Renderer {
         ui.state.sun_azimuth = -2.5;
         ui.state.sun_altitude = 1.3;
         ui.state.shadow_bias = 0.001;
+        ui.state.voxel_count = scene.voxel_count;
+        ui.state.scene_size = scene.size;
 
         let mut _self = Self {
             pipeline_layouts,
@@ -952,10 +962,6 @@ impl Renderer {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&self.samplers.linear),
-                    },
                 ],
             }));
 
@@ -1075,6 +1081,8 @@ impl Renderer {
                     shadow_bias: ctx.ui.state.shadow_bias,
                     camera,
                     prev_camera,
+                    jitter: HALTON_16[(self.frame_id as usize + 1) & 0xf],
+                    prev_jitter: HALTON_16[(self.frame_id as usize) & 0xf],
                 }]),
             );
 
@@ -1231,8 +1239,6 @@ impl Renderer {
             );
         }
 
-        // ctx.ui.state.voxel_count = self..voxel_count;
-        // ctx.ui.state.scene_size = self.uniforms.voxels.dimension();
         ctx.ui.frame(&mut UiCtx {
             window: ctx.window,
             device: ctx.device,
@@ -1313,3 +1319,22 @@ impl RenderTimer {
         }
     }
 }
+
+const HALTON_16: [glam::Vec2; 16] = [
+    glam::vec2(0.500000, 0.333333),
+    glam::vec2(0.250000, 0.666667),
+    glam::vec2(0.750000, 0.111111),
+    glam::vec2(0.125000, 0.444444),
+    glam::vec2(0.625000, 0.777778),
+    glam::vec2(0.375000, 0.222222),
+    glam::vec2(0.875000, 0.555556),
+    glam::vec2(0.062500, 0.888889),
+    glam::vec2(0.562500, 0.037037),
+    glam::vec2(0.312500, 0.370370),
+    glam::vec2(0.812500, 0.703704),
+    glam::vec2(0.187500, 0.148148),
+    glam::vec2(0.687500, 0.481481),
+    glam::vec2(0.437500, 0.814815),
+    glam::vec2(0.937500, 0.259259),
+    glam::vec2(0.031250, 0.592593),
+];

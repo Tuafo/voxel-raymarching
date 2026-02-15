@@ -25,9 +25,12 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let dimensions = textureDimensions(tex_color).xy;
+    let pos = vec2<i32>(in.uv * vec2<f32>(dimensions) + 0.5);
+
     var color = vec3(0.0);
     if frame.fxaa_enabled == 0u {
-        color = textureSample(tex_color, main_sampler, in.uv).rgb;
+        color = textureLoad(tex_color, pos, 0).rgb;
     } else {
         color = fxaa(in.position, in.uv);
     }

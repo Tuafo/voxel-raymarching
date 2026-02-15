@@ -34,103 +34,154 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-const ACC_ALPHA: f32 = 0.05;
+const ACC_ALPHA: f32 = 0.1;
 
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
-    let dimensions = vec2<i32>(textureDimensions(tex_acc).xy);
-    let texel_size = 1.0 / vec2<f32>(dimensions);
-    let uv = vec2<f32>(in.id.xy) * texel_size;
-
+    let dimensions = vec2<i32>(textureDimensions(tex_color).xy);
     let pos = vec2<i32>(in.id.xy);
 
-    if frame.frame_id == 0u || frame.taa_enabled == 0u {
-        let cur_color = textureLoad(tex_color, vec2<i32>(in.id.xy)).rgb;
-        textureStore(out_color, pos, vec4(cur_color, 1.0));
-        return;
+    var color = vec3<f32>();
+    if frame.taa_enabled == 0u || frame.frame_id == 0u {
+        color = textureLoad(tex_color, pos).rgb;
+    } else {
+        color = taa(in);
     }
 
-    var src_sample_total = vec3<f32>(0.0);
-    var src_sample_weight = 0.0;
-    var neighborhood_min = vec3<f32>(9999.0);
-    var neighborhood_max = vec3<f32>(-9999.0);
-    var m1 = vec3<f32>(0.0);
-    var m2 = vec3<f32>(0.0);
-    var closest_depth = 1.0;
-    var closest_depth_pixel = vec2<i32>(0);
+    textureStore(out_color, pos, vec4(color, 1.0));
+}
 
-    for (var dx = -1; dx <= 1; dx += 1) {
-        for (var dy = -1; dy <= 1; dy += 1) {
-            let pixel_offset = vec2<i32>(dx, dy);
-            let pixel_pos = clamp(pos + pixel_offset, vec2(0), dimensions - 1);
+fn taa(in: ComputeIn) -> vec3<f32> {
+    let dimensions = vec2<i32>(textureDimensions(tex_color).xy);
+    let pos = vec2<i32>(in.id.xy);
 
-            let neighbor = max(vec3(0.0), textureLoad(tex_color, pixel_pos).rgb);
-            let sub_sample_distance = length(vec2<f32>(pixel_offset));
-            let sub_sample_weight = filter_mitchell(sub_sample_distance);
+    let texel_size = 1.0 / vec2<f32>(dimensions);
+    let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 
-            src_sample_total += neighbor * sub_sample_weight;
-            src_sample_weight += sub_sample_weight;
+    let cur_color = textureLoad(tex_color, pos).rgb;
+    let velocity = textureLoad(tex_velocity, pos).rg;
 
-            neighborhood_min = min(neighborhood_min, neighbor);
-            neighborhood_max = max(neighborhood_max, neighbor);
+    let acc_uv = uv - velocity;
+    if any(acc_uv < vec2(0.0)) || any(acc_uv >= vec2(1.0)) {
+        return cur_color;
+    }
 
-            m1 += neighbor;
-            m2 += neighbor * neighbor;
-
-            let cur_depth = textureLoad(tex_depth, pixel_pos).r;
-            if cur_depth < closest_depth {
-                closest_depth = cur_depth;
-                closest_depth_pixel = pixel_pos;
+    var min_color = cur_color;
+    var max_color = cur_color;
+    for (var x = -1; x <= 1; x += 1) {
+        for (var y = -1; y <= 1; y += 1) {
+            let sample_pos = pos + vec2(x, y);
+            if any(sample_pos < vec2(0)) || any(sample_pos >= dimensions) {
+                continue;
             }
+
+            let sample = textureLoad(tex_color, sample_pos).rgb;
+            min_color = min(min_color, sample);
+            max_color = max(max_color, sample);
         }
     }
 
-    let velocity = textureLoad(tex_velocity, closest_depth_pixel).xy * 0.5;
-    let acc_pixel_pos = vec2<f32>(pos) - velocity;
-    var src_sample = src_sample_total / src_sample_weight;
+    let acc_color = textureSampleLevel(tex_acc, main_sampler, acc_uv, 0.0).rgb;
 
-    if any(acc_pixel_pos < vec2(0.0)) || any(acc_pixel_pos > vec2<f32>(dimensions)) {
-        textureStore(out_color, pos, vec4(1.0, 0.0, 0.0, 1.0));
-        // textureStore(out_color, pos, vec4(src_sample, 1.0));
-        return;
-    }
+    let acc_clamped = clamp(acc_color, min_color, max_color);
 
-    // TODO: catmull rom filter
-    var acc_sample = textureSampleLevel(tex_acc, main_sampler, acc_pixel_pos / vec2<f32>(dimensions), 0.0).rgb;
-
-    let gamma = 1.0;
-    let mu = m1 / 9.0;
-    let sigma = sqrt(abs((m2 / 9.0) - (mu * mu)));
-    let min_c = mu - gamma * sigma;
-    let max_c = mu + gamma * sigma;
-
-    acc_sample = clip_aabb(min_c, max_c, clamp(acc_sample, neighborhood_min, neighborhood_max));
-
-    let luma_src = luminance(src_sample);
-    let luma_acc = luminance(acc_sample);
-
-    let src_weight = ACC_ALPHA / (1.0 + luma_src);
-    let acc_weight = (1.0 - ACC_ALPHA) / (1.0 + luma_acc);
-
-    let color = (src_sample * src_weight + acc_sample * acc_weight) / max(src_weight + acc_weight, 1e-5);
-
-    textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
+    let res = cur_color * ACC_ALPHA + (1.0 - ACC_ALPHA) * acc_clamped;
+    return res;
 }
 
-fn filter_mitchell(d: f32) -> f32 {
-    const B: f32 = 1.0 / 3.0;
-    const C: f32 = 1.0 / 3.0;
-    let x = d * 1.0;
+//     let dimensions = vec2<i32>(textureDimensions(tex_acc).xy);
+//     let texel_size = 1.0 / vec2<f32>(dimensions);
+//     let uv = vec2<f32>(in.id.xy) * texel_size;
 
-    let x2 = x * x;
-    let x3 = x * x * x;
-    if x < 1.0 {
-        return (12.0 - 9.0 * B - 6.0 * C) * x3 + (-18.0 + 12.0 * B + 6.0 * C) * x2 + (6.0 - 2.0 * B);
-    } else {
-        return (-B - 6.0 * C) * x3 + (6.0 * B + 30.0 * C) * x2 + (-12.0 * B - 48.0 * C) * x + (8.0 * B + 24.0 * C);
-    }
-}
+//     let pos = vec2<i32>(in.id.xy);
+
+//     if frame.frame_id == 0u || frame.taa_enabled == 0u {
+//         let cur_color = textureLoad(tex_color, vec2<i32>(in.id.xy)).rgb;
+//         textureStore(out_color, pos, vec4(cur_color, 1.0));
+//         return;
+//     }
+
+//     var src_sample_total = vec3<f32>(0.0);
+//     var src_sample_weight = 0.0;
+//     var neighborhood_min = vec3<f32>(9999.0);
+//     var neighborhood_max = vec3<f32>(-9999.0);
+//     var m1 = vec3<f32>(0.0);
+//     var m2 = vec3<f32>(0.0);
+//     var closest_depth = 1.0;
+//     var closest_depth_pixel = vec2<i32>(0);
+
+//     for (var dx = -1; dx <= 1; dx += 1) {
+//         for (var dy = -1; dy <= 1; dy += 1) {
+//             let pixel_offset = vec2<i32>(dx, dy);
+//             let pixel_pos = clamp(pos + pixel_offset, vec2(0), dimensions - 1);
+
+//             let neighbor = max(vec3(0.0), textureLoad(tex_color, pixel_pos).rgb);
+//             let sub_sample_distance = length(vec2<f32>(pixel_offset));
+//             let sub_sample_weight = filter_mitchell(sub_sample_distance);
+
+//             src_sample_total += neighbor * sub_sample_weight;
+//             src_sample_weight += sub_sample_weight;
+
+//             neighborhood_min = min(neighborhood_min, neighbor);
+//             neighborhood_max = max(neighborhood_max, neighbor);
+
+//             m1 += neighbor;
+//             m2 += neighbor * neighbor;
+
+//             let cur_depth = textureLoad(tex_depth, pixel_pos).r;
+//             if cur_depth < closest_depth {
+//                 closest_depth = cur_depth;
+//                 closest_depth_pixel = pixel_pos;
+//             }
+//         }
+//     }
+
+//     let velocity = textureLoad(tex_velocity, closest_depth_pixel).xy * 0.5;
+//     let acc_pixel_pos = vec2<f32>(pos) - velocity;
+//     var src_sample = src_sample_total / src_sample_weight;
+
+//     if any(acc_pixel_pos < vec2(0.0)) || any(acc_pixel_pos > vec2<f32>(dimensions)) {
+//         textureStore(out_color, pos, vec4(1.0, 0.0, 0.0, 1.0));
+//         // textureStore(out_color, pos, vec4(src_sample, 1.0));
+//         return;
+//     }
+
+//     // TODO: catmull rom filter
+//     var acc_sample = textureSampleLevel(tex_acc, main_sampler, acc_pixel_pos / vec2<f32>(dimensions), 0.0).rgb;
+
+//     let gamma = 1.0;
+//     let mu = m1 / 9.0;
+//     let sigma = sqrt(abs((m2 / 9.0) - (mu * mu)));
+//     let min_c = mu - gamma * sigma;
+//     let max_c = mu + gamma * sigma;
+
+//     acc_sample = clip_aabb(min_c, max_c, clamp(acc_sample, neighborhood_min, neighborhood_max));
+
+//     let luma_src = luminance(src_sample);
+//     let luma_acc = luminance(acc_sample);
+
+//     let src_weight = ACC_ALPHA / (1.0 + luma_src);
+//     let acc_weight = (1.0 - ACC_ALPHA) / (1.0 + luma_acc);
+
+//     let color = (src_sample * src_weight + acc_sample * acc_weight) / max(src_weight + acc_weight, 1e-5);
+
+//     textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
+// }
+
+// fn filter_mitchell(d: f32) -> f32 {
+//     const B: f32 = 1.0 / 3.0;
+//     const C: f32 = 1.0 / 3.0;
+//     let x = d * 1.0;
+
+//     let x2 = x * x;
+//     let x3 = x * x * x;
+//     if x < 1.0 {
+//         return (12.0 - 9.0 * B - 6.0 * C) * x3 + (-18.0 + 12.0 * B + 6.0 * C) * x2 + (6.0 - 2.0 * B);
+//     } else {
+//         return (-B - 6.0 * C) * x3 + (6.0 * B + 30.0 * C) * x2 + (-12.0 * B - 48.0 * C) * x + (8.0 * B + 24.0 * C);
+//     }
+// }
 
 fn clip_aabb(aabb_min: vec3<f32>, aabb_max: vec3<f32>, prev_sample: vec3<f32>) -> vec3<f32> {
     // 1. Find the center of the AABB (this effectively creates a ray from center to history)
