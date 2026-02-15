@@ -3,6 +3,8 @@ struct Environment {
     shadow_bias: f32,
     camera: Camera,
     prev_camera: Camera,
+    jitter: vec2<f32>,
+    prev_jitter: vec2<f32>,
 }
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -23,8 +25,8 @@ struct FrameMetadata {
 
 @group(1) @binding(0) var main_sampler: sampler;
 @group(1) @binding(1) var tex_velocity: texture_storage_2d<rgba16float, read>;
-@group(1) @binding(2) var tex_depth: texture_storage_2d<r32float, read>;
-@group(1) @binding(3) var tex_color: texture_storage_2d<rgba16float, read>;
+@group(1) @binding(2) var tex_depth: texture_2d<f32>;
+@group(1) @binding(3) var tex_color: texture_2d<f32>;
 
 @group(2) @binding(0) var tex_acc: texture_2d<f32>;
 @group(2) @binding(1) var out_color: texture_storage_2d<rgba16float, write>;
@@ -44,7 +46,7 @@ fn compute_main(in: ComputeIn) {
 
     var color = vec3<f32>();
     if frame.taa_enabled == 0u || frame.frame_id == 0u {
-        color = textureLoad(tex_color, pos).rgb;
+        color = textureLoad(tex_color, pos, 0).rgb;
     } else {
         color = taa(in);
     }
@@ -59,220 +61,147 @@ fn taa(in: ComputeIn) -> vec3<f32> {
     let texel_size = 1.0 / vec2<f32>(dimensions);
     let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 
-    let cur_color = textureLoad(tex_color, pos).rgb;
-    let velocity = textureLoad(tex_velocity, pos).rg;
-
-    let acc_uv = uv - velocity;
-    if any(acc_uv < vec2(0.0)) || any(acc_uv >= vec2(1.0)) {
-        return cur_color;
-    }
-
-    var min_color = cur_color;
-    var max_color = cur_color;
+    var min_depth = 1.0;
+    var min_depth_pos = vec2(0);
     for (var x = -1; x <= 1; x += 1) {
         for (var y = -1; y <= 1; y += 1) {
-            let sample_pos = pos + vec2(x, y);
-            if any(sample_pos < vec2(0)) || any(sample_pos >= dimensions) {
-                continue;
-            }
+            let sample_pos = clamp(pos + vec2(x, y), vec2(0), dimensions);
 
-            let sample = textureLoad(tex_color, sample_pos).rgb;
-            min_color = min(min_color, sample);
-            max_color = max(max_color, sample);
+            let depth = textureLoad(tex_depth, sample_pos, 0).r;
+            if depth < min_depth {
+                min_depth = depth;
+                min_depth_pos = sample_pos;
+            }
         }
     }
 
-    let acc_color = textureSampleLevel(tex_acc, main_sampler, acc_uv, 0.0).rgb;
+    let velocity = textureLoad(tex_velocity, min_depth_pos).rg;
 
-    let acc_clamped = clamp(acc_color, min_color, max_color);
-
-    let res = cur_color * ACC_ALPHA + (1.0 - ACC_ALPHA) * acc_clamped;
-    return res;
-}
-
-//     let dimensions = vec2<i32>(textureDimensions(tex_acc).xy);
-//     let texel_size = 1.0 / vec2<f32>(dimensions);
-//     let uv = vec2<f32>(in.id.xy) * texel_size;
-
-//     let pos = vec2<i32>(in.id.xy);
-
-//     if frame.frame_id == 0u || frame.taa_enabled == 0u {
-//         let cur_color = textureLoad(tex_color, vec2<i32>(in.id.xy)).rgb;
-//         textureStore(out_color, pos, vec4(cur_color, 1.0));
-//         return;
-//     }
-
-//     var src_sample_total = vec3<f32>(0.0);
-//     var src_sample_weight = 0.0;
-//     var neighborhood_min = vec3<f32>(9999.0);
-//     var neighborhood_max = vec3<f32>(-9999.0);
-//     var m1 = vec3<f32>(0.0);
-//     var m2 = vec3<f32>(0.0);
-//     var closest_depth = 1.0;
-//     var closest_depth_pixel = vec2<i32>(0);
-
-//     for (var dx = -1; dx <= 1; dx += 1) {
-//         for (var dy = -1; dy <= 1; dy += 1) {
-//             let pixel_offset = vec2<i32>(dx, dy);
-//             let pixel_pos = clamp(pos + pixel_offset, vec2(0), dimensions - 1);
-
-//             let neighbor = max(vec3(0.0), textureLoad(tex_color, pixel_pos).rgb);
-//             let sub_sample_distance = length(vec2<f32>(pixel_offset));
-//             let sub_sample_weight = filter_mitchell(sub_sample_distance);
-
-//             src_sample_total += neighbor * sub_sample_weight;
-//             src_sample_weight += sub_sample_weight;
-
-//             neighborhood_min = min(neighborhood_min, neighbor);
-//             neighborhood_max = max(neighborhood_max, neighbor);
-
-//             m1 += neighbor;
-//             m2 += neighbor * neighbor;
-
-//             let cur_depth = textureLoad(tex_depth, pixel_pos).r;
-//             if cur_depth < closest_depth {
-//                 closest_depth = cur_depth;
-//                 closest_depth_pixel = pixel_pos;
-//             }
-//         }
-//     }
-
-//     let velocity = textureLoad(tex_velocity, closest_depth_pixel).xy * 0.5;
-//     let acc_pixel_pos = vec2<f32>(pos) - velocity;
-//     var src_sample = src_sample_total / src_sample_weight;
-
-//     if any(acc_pixel_pos < vec2(0.0)) || any(acc_pixel_pos > vec2<f32>(dimensions)) {
-//         textureStore(out_color, pos, vec4(1.0, 0.0, 0.0, 1.0));
-//         // textureStore(out_color, pos, vec4(src_sample, 1.0));
-//         return;
-//     }
-
-//     // TODO: catmull rom filter
-//     var acc_sample = textureSampleLevel(tex_acc, main_sampler, acc_pixel_pos / vec2<f32>(dimensions), 0.0).rgb;
-
-//     let gamma = 1.0;
-//     let mu = m1 / 9.0;
-//     let sigma = sqrt(abs((m2 / 9.0) - (mu * mu)));
-//     let min_c = mu - gamma * sigma;
-//     let max_c = mu + gamma * sigma;
-
-//     acc_sample = clip_aabb(min_c, max_c, clamp(acc_sample, neighborhood_min, neighborhood_max));
-
-//     let luma_src = luminance(src_sample);
-//     let luma_acc = luminance(acc_sample);
-
-//     let src_weight = ACC_ALPHA / (1.0 + luma_src);
-//     let acc_weight = (1.0 - ACC_ALPHA) / (1.0 + luma_acc);
-
-//     let color = (src_sample * src_weight + acc_sample * acc_weight) / max(src_weight + acc_weight, 1e-5);
-
-//     textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
-// }
-
-// fn filter_mitchell(d: f32) -> f32 {
-//     const B: f32 = 1.0 / 3.0;
-//     const C: f32 = 1.0 / 3.0;
-//     let x = d * 1.0;
-
-//     let x2 = x * x;
-//     let x3 = x * x * x;
-//     if x < 1.0 {
-//         return (12.0 - 9.0 * B - 6.0 * C) * x3 + (-18.0 + 12.0 * B + 6.0 * C) * x2 + (6.0 - 2.0 * B);
-//     } else {
-//         return (-B - 6.0 * C) * x3 + (6.0 * B + 30.0 * C) * x2 + (-12.0 * B - 48.0 * C) * x + (8.0 * B + 24.0 * C);
-//     }
-// }
-
-fn clip_aabb(aabb_min: vec3<f32>, aabb_max: vec3<f32>, prev_sample: vec3<f32>) -> vec3<f32> {
-    // 1. Find the center of the AABB (this effectively creates a ray from center to history)
-    let p_clip = 0.5 * (aabb_max + aabb_min);
-
-    // 2. Get the half-extents of the box
-    // Add a tiny epsilon to avoid division by zero if min == max
-    let e_clip = 0.5 * (aabb_max - aabb_min) + vec3<f32>(0.00000001);
-
-    // 3. Calculate the vector from the center to the history sample
-    let v_clip = prev_sample - p_clip;
-    let v_unit = v_clip / e_clip;
-    let a_unit = abs(v_unit);
-
-    // 4. Determine the "furthest" dimension relative to the box size
-    let ma_unit = max(a_unit.x, max(a_unit.y, a_unit.z));
-
-    // 5. If we are outside the box (ratio > 1.0), scale the vector back to the edge
-    if (ma_unit > 1.0) {
-        return p_clip + v_clip / ma_unit;
-    } else {
-        return prev_sample; // Inside the box, keep it
+    let acc_uv = uv - velocity;
+    if any(acc_uv < vec2(0.0)) || any(acc_uv >= vec2(1.0)) {
+        return textureLoad(tex_color, pos, 0).rgb;
     }
+
+    let cur_color = rgb_to_ycocg(textureLoad(tex_color, pos, 0).rgb);
+
+    var min_color = cur_color;
+    var max_color = cur_color;
+    var avg_color = vec3(0.0);
+    for (var x = -1; x <= 1; x += 1) {
+        for (var y = -1; y <= 1; y += 1) {
+            let sample_pos = clamp(pos + vec2(x, y), vec2(0), dimensions);
+
+            let sample = rgb_to_ycocg(textureLoad(tex_color, sample_pos, 0).rgb);
+            min_color = min(min_color, sample);
+            max_color = max(max_color, sample);
+            avg_color += sample;
+        }
+    }
+    avg_color /= 9.0;
+
+    // depth rejection
+    // probably a dead end...maybe try velocity rejection?
+    // let cur_view_depth = -environment.camera.near / min_depth;
+    // let acc_depth = textureSampleLevel(tex_depth, main_sampler, acc_uv, 0.0).r;
+    // let acc_view_depth = -environment.prev_camera.near / acc_depth;
+    // if cur_view_depth < 1.2 * acc_view_depth {
+    //     // return ycocg_to_rgb(cur_color);
+    //     return vec3(0.0, 1.0, 0.0);
+    // }
+
+    var acc_color = sample_catmull_rom_5(acc_uv, vec2<f32>(dimensions));
+    acc_color = rgb_to_ycocg(acc_color);
+    acc_color = clamp(acc_color, min_color, max_color);
+
+    let res = mix(acc_color, cur_color, ACC_ALPHA);
+    return ycocg_to_rgb(res);
 }
 
-fn luminance(c: vec3<f32>) -> f32 {
-    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+fn rgb_to_ycocg(rgb: vec3<f32>) -> vec3<f32> {
+    const R1: vec3<f32> = vec3<f32>(0.25, 0.5, 0.25);
+    const R2: vec3<f32> = vec3<f32>(0.5, 0.0, -0.5);
+    const R3: vec3<f32> = vec3<f32>(-0.25, 0.5, -0.25);
+    return vec3<f32>(
+        dot(rgb, R1),
+        dot(rgb, R2),
+        dot(rgb, R3),
+    );
 }
 
-// fn sample_texture_catmull_rom(
-//     tex: texture_2d<f32>,
-//     samp: sampler,
-//     uv: vec2<f32>,
-//     tex_size: vec2<f32>
-// ) -> vec3<f32> {
-//     // We work in unnormalized coordinates to make math easier
-//     let sample_pos = uv * tex_size;
-//     let tex_pos1 = floor(sample_pos - 0.5) + 0.5;
+fn ycocg_to_rgb(ycocg: vec3<f32>) -> vec3<f32> {
+    const R1: vec3<f32> = vec3<f32>(1.0, 1.0, -1.0);
+    const R2: vec3<f32> = vec3<f32>(1.0, 0.0, 1.0);
+    const R3: vec3<f32> = vec3<f32>(1.0, -1.0, -1.0);
+    return vec3<f32>(
+        dot(ycocg, R1),
+        dot(ycocg, R2),
+        dot(ycocg, R3),
+    );
+}
 
-//     // Compute weights
-//     let f = sample_pos - tex_pos1;
-//     let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
-//     let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
-//     let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
-//     let w3 = f * f * (-0.5 + 0.5 * f);
+fn clip_aabb(bds_min: vec3<f32>, bds_max: vec3<f32>, p: vec3<f32>, q: vec3<f32>) -> vec3<f32> {
+    let r_min = bds_min - p;
+    let r_max = bds_max - p;
 
-//     // Compute weighted coordinates
-//     let w12 = w1 + w2;
-//     let offset12 = w2 / (w1 + w2);
+    const EPSILON: f32 = 1.0e-8;
+    var r = q - p;
 
-//     let tex_pos0 = tex_pos1 - 1.0;
-//     let tex_pos3 = tex_pos1 + 2.0;
-//     let tex_pos12 = tex_pos1 + offset12;
+    if r.x > r_max.x {
+        r *= r_max.x / (r.x + EPSILON);
+    }
+    if r.y > r_max.y {
+        r *= r_max.y / (r.y + EPSILON);
+    }
+    if r.z > r_max.z {
+        r *= r_max.z / (r.z + EPSILON);
+    }
 
-//     // Convert back to UVs
-//     let inv_tex_size = 1.0 / tex_size;
-//     let uv0 = vec2<f32>(tex_pos1.x - 1.0, tex_pos1.y - 1.0) * inv_tex_size; // Top-left is actually irrelevant for 5-tap if optimized further, but here's the 5-tap logic:
+    if r.x < r_min.x {
+        r *= r_min.x / (r.x + EPSILON);
+    }
+    if r.y < r_min.y {
+        r *= r_min.y / (r.y + EPSILON);
+    }
+    if r.z < r_min.z {
+        r *= r_min.z / (r.z + EPSILON);
+    }
 
-//     // 5-Tap Approximation Strategy:
-//     // We usually combine weights to reduce samples.
-//     // However, a full separated axis implementation is often cleaner in code.
-//     // Below is the specific 5-tap bilinear-exploitation method adapted for WGSL.
+    return p + r;
+}
 
-//     // Recalculate for 5-tap specifically:
-//     let tc = floor(sample_pos - 0.5) + 0.5;
-//     let f = sample_pos - tc;
 
-//     let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
-//     let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
-//     let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
-//     let w3 = f * f * (-0.5 + 0.5 * f);
+// 5-tap approximation of of Catmull-Rom filter
+// very similar results to 9-tap
+// from https://advances.realtimerendering.com/s2016/Filmic%20SMAA%20v7.pptx
+fn sample_catmull_rom_5(uv: vec2<f32>, dimensions: vec2<f32>) -> vec3<f32> {
+    let texel_size = 1.0 / dimensions;
+    let pos = uv * dimensions;
+    let center_pos = floor(pos - 0.5) + 0.5;
+    let f = pos - center_pos;
+    let f2 = f * f;
+    let f3 = f * f2;
 
-//     let w12 = w1 + w2;
-//     let offset12 = w2 / w12;
+    const SHARPNESS: f32 = 0.4;
+    let c = SHARPNESS;
+    let w0 = -c * f3 + 2.0 * c * f2 - c * f;
+    let w1 = (2.0 - c) * f3 - (3.0 - c) * f2 + 1.0;
+    let w2 = -(2.0 - c) * f3 + (3.0 - 2.0 * c) * f2 + c * f;
+    let w3 = c * f3 - c * f2;
 
-//     let tc0 = (tc - 1.0) * inv_tex_size;
-//     let tc3 = (tc + 2.0) * inv_tex_size;
-//     let tc12 = (tc + offset12) * inv_tex_size;
+    let w12 = w1 + w2;
+    let tc12 = texel_size * (center_pos + w2 / w12);
+    let center_color = textureSampleLevel(tex_acc, main_sampler, tc12.xy, 0.0).rgb;
 
-//     // Sample using linear sampler
-//     // Center rows
-//     let result =
-//         textureSampleLevel(tex, samp, vec2<f32>(tc12.x, tc0.y), 0.0).rgb * (w12.x * w0.y) +
-//         textureSampleLevel(tex, samp, vec2<f32>(tc0.x, tc12.y), 0.0).rgb * (w0.x * w12.y) +
-//         textureSampleLevel(tex, samp, vec2<f32>(tc12.x, tc12.y), 0.0).rgb * (w12.x * w12.y) + // Center
-//         textureSampleLevel(tex, samp, vec2<f32>(tc3.x, tc12.y), 0.0).rgb * (w3.x * w12.y) +
-//         textureSampleLevel(tex, samp, vec2<f32>(tc12.x, tc3.y), 0.0).rgb * (w12.x * w3.y);
+    let tc0 = texel_size * (center_pos - 1.0);
+    let tc3 = texel_size * (center_pos + 2.0);
 
-//     // Normalizing the result isn't strictly necessary if weights sum to 1,
-//     // but Catmull-Rom weights usually do.
-//     // Note: This 5-tap is an approximation.
+    var color = vec4(0.0);
+    color += vec4(textureSampleLevel(tex_acc, main_sampler, vec2(tc12.x, tc0.y), 0.0).rgb, 1.0) * (w12.x * w0.y);
+    color += vec4(textureSampleLevel(tex_acc, main_sampler, vec2(tc0.x, tc12.y), 0.0).rgb, 1.0) * (w0.x * w12.y);
+    color += vec4(center_color, 1.0) * (w12.x * w12.y);
+    color += vec4(textureSampleLevel(tex_acc, main_sampler, vec2(tc3.x, tc12.y), 0.0).rgb, 1.0) * (w3.x * w12.y);
+    color += vec4(textureSampleLevel(tex_acc, main_sampler, vec2(tc12.x, tc3.y), 0.0).rgb, 1.0) * (w12.x * w3.y);
 
-//     return max(result, vec3<f32>(0.0)); // Prevent negative ringing
-// }
+    let res = color.rgb / color.a;
+    return max(res, vec3(0.0));
+}
