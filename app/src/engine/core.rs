@@ -69,6 +69,7 @@ impl Engine {
         // self.model.rotation += delta_time.as_secs_f64() as f32 * glam::Vec3::ONE;
         // self.model.position = -0.5 * glam::DVec3::ONE;
         // self.model.position = glam::dvec3(-20.0, -30.0, -10.0) * 16.0;
+        // self.model.scale = glam::DVec3::ONE / 16.0;
         self.model.scale = glam::DVec3::ONE / 16.0;
         // self.model.scale = glam::Vec3::ONE / self.scene.size.max_element() as f32;
         self.model.update();

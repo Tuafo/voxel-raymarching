@@ -1,7 +1,7 @@
-@group(0) @binding(0) var out_albedo: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(1) var out_normal: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(2) var out_depth: texture_storage_2d<r32float, write>;
-@group(0) @binding(3) var out_velocity: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(0) var tex_out_albedo: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(1) var tex_out_normal: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(2) var tex_out_depth: texture_storage_2d<r32float, write>;
+@group(0) @binding(3) var tex_out_velocity: texture_storage_2d<rgba16float, write>;
 
 struct VoxelSceneMetadata {
     size: vec3<u32>,
@@ -49,61 +49,112 @@ struct FrameMetadata {
 @group(2) @binding(1) var<uniform> frame: FrameMetadata;
 @group(2) @binding(2) var<uniform> model: Model;
 
-// @group(3) @binding(3) var<
+@group(3) @binding(0) var tex_out_illum: texture_storage_2d<rgba16float, write>;
+@group(3) @binding(1) var tex_acc_illum: texture_storage_2d<rgba16float, read>;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
 const DDA_MAX_STEPS: u32 = 300u;
+const ILLUM_ACC_ALPHA: f32 = 0.025;
 const SKY_COLOR: vec3<f32> = vec3(0.5, 0.9, 1.5);
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
     let pos = vec2<i32>(in.id.xy);
-    let dimensions = textureDimensions(out_albedo).xy;
+    let res = trace_scene(in);   
+
+    textureStore(tex_out_albedo, pos, vec4(res.albedo, 1.0));
+    textureStore(tex_out_normal, pos, vec4(res.normal, 1.0));
+    textureStore(tex_out_depth, pos, vec4(res.depth, 0.0, 0.0, 1.0));
+    textureStore(tex_out_velocity, pos, vec4(res.velocity, 0.0, 1.0));
+    textureStore(tex_out_illum, pos, vec4(res.illumination, 1.0));
+}
+
+struct SceneResult {
+    albedo: vec3<f32>,
+    normal: vec3<f32>,
+    depth: f32,
+    velocity: vec2<f32>,
+    illumination: vec3<f32>,
+}
+
+fn trace_scene(in: ComputeIn) -> SceneResult {
+    let pos = vec2<i32>(in.id.xy);
+    let dimensions = textureDimensions(tex_out_albedo).xy;
     let texel_size = 1.0 / vec2<f32>(dimensions);
 
-    let ray = start_ray(in.id.xy);
-    let res = raymarch(ray);
+    let ray = raymarch(start_ray(vec2<u32>(pos)));
 
-    if !res.hit {
-        textureStore(out_albedo, pos, vec4(SKY_COLOR, 0.0));
-        textureStore(out_normal, pos, vec4(0.0, 0.0, 0.0, 1.0));
-        textureStore(out_depth, pos, vec4(0.0, 0.0, 0.0, 1.0));
-        textureStore(out_velocity, pos, vec4(0.0, 0.0, 0.0, 1.0));
-        return;
+    if !ray.hit {
+        var res: SceneResult;
+        res.albedo = SKY_COLOR;
+        res.normal = vec3(0.0);
+        res.depth = 1.0;
+        res.velocity = vec2(0.0);
+        res.illumination = vec3(1.0);
+        return res;
     }
 
-    let albedo = palette_color(res.palette_index);
-    let normal = normalize(model.normal_transform * res.surface_normal);
+    let ws_pos_h = model.transform * vec4<f32>(ray.local_pos, 1.0);
+    let ws_pos = ws_pos_h.xyz;
+    let depth = normalized_depth(ws_pos);
 
-        var shadow_ray_dir = normalize(environment.sun_direction);
-        let shadow_ray_origin = res.local_pos + environment.shadow_bias * res.hit_normal;
-        let shadow_factor = 0.0;
-        // let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
-        // let in_shadow = false;
+    let cs_pos = environment.camera.view_proj * ws_pos_h;
+    let ndc = cs_pos.xyz / cs_pos.w;
+    let uv = ndc.xy * vec2(0.5, -0.5) + 0.5;
 
-        let world_pos = model.transform * vec4<f32>(res.local_pos, 1.0);
+    let prev_cs_pos = environment.prev_camera.view_proj * ws_pos_h;
+    let prev_ndc = prev_cs_pos.xy / prev_cs_pos.w;
+    let prev_uv = prev_ndc * vec2(0.5, -0.5) + 0.5;
+    
+    let velocity = uv - prev_uv;
+    
+    let albedo = palette_color(ray.palette_index);
+    let ws_surface_normal = normalize(model.normal_transform * ray.surface_normal);
+    let ws_hit_normal = normalize(model.normal_transform * ray.hit_normal);
 
-        var depth = dot(world_pos.xyz - environment.camera.ws_position, environment.camera.forward);
-        depth = (depth - environment.camera.near) / (environment.camera.far - environment.camera.near);
+    // var shadow_ray_dir = normalize(environment.sun_direction);
+    // let shadow_ray_origin = res.local_pos + environment.shadow_bias * res.hit_normal;
+    // let shadow_factor = 0.0;
+    // let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
+    // let in_shadow = false
 
+    var illumination = vec3(0.0);
+    {
+        var illum_ray: Ray;
+        illum_ray.in_bounds = true;
+        illum_ray.t_start = 0.0;
+        illum_ray.origin = ray.local_pos + environment.shadow_bias * ray.hit_normal;
 
-        let clip_pos = environment.camera.view_proj * world_pos;
-        let ndc = clip_pos.xy / clip_pos.w;
-        let uv = ndc * vec2(0.5, -0.5) + 0.5;
+        let fragment_id = in.id.x + in.id.y * dimensions.x;
+        var seed = fragment_id * 1973u + frame.frame_id * 927u + 26699u;
+        var dir = rand_direction(seed);
+        dir = dir * sign(dot(ray.surface_normal, dir)); // reflect into the normal hemisphere
+        if any(abs(dir) > vec3(0.0001)) {
+            illum_ray.direction = normalize(dir);
+            
+            let occluded = raymarch_shadow(illum_ray);
+            let cur_illum = select(vec3(1.0), vec3(0.0), occluded);
+    
+            let acc_illum = textureLoad(tex_acc_illum, pos).rgb;
+    
+            illumination = ILLUM_ACC_ALPHA * cur_illum + (1.0 - ILLUM_ACC_ALPHA) * acc_illum;
+        }
+    }
 
-        let prev_clip_pos = environment.prev_camera.view_proj * world_pos;
-        let prev_ndc = prev_clip_pos.xy / prev_clip_pos.w;
-        let prev_uv = prev_ndc * vec2(0.5, -0.5) + 0.5;
+    var res: SceneResult;
+    res.albedo = albedo;
+    res.normal = ws_surface_normal;
+    res.depth = depth;
+    res.illumination = illumination;
+    return res;
+}
 
-        let velocity = uv - prev_uv;
-
-    textureStore(out_albedo, vec2<i32>(in.id.xy), vec4(albedo, shadow_factor));
-    textureStore(out_normal, vec2<i32>(in.id.xy), vec4(normal, 1.0));
-    textureStore(out_depth, vec2<i32>(in.id.xy), vec4(depth, 0.0, 0.0, 1.0));
-    textureStore(out_velocity, vec2<i32>(in.id.xy), vec4(velocity, 0.0, 1.0));
+fn normalized_depth(ws_pos: vec3<f32>) -> f32 {
+    let depth = dot(ws_pos.xyz - environment.camera.ws_position, environment.camera.forward);
+    return (depth - environment.camera.near) / (environment.camera.far - environment.camera.near);
 }
 
 struct Ray {
@@ -305,7 +356,7 @@ fn step_mask(ray_length: vec3<f32>) -> vec3<bool> {
 
 fn start_ray(pos: vec2<u32>) -> Ray {
     let camera = environment.camera;
-    let dimensions = textureDimensions(out_albedo).xy;
+    let dimensions = textureDimensions(tex_out_albedo).xy;
 
     var pixel_pos = vec2<f32>(pos);
     if frame.taa_enabled == 0u {
@@ -364,6 +415,54 @@ fn safe_inverse(v: vec3<f32>) -> vec3<f32> {
 
 fn palette_color(index: u32) -> vec3<f32> {
     return palette.data[index].rgb;
+}
+
+fn pcg_hash(seed: ptr<function, u32>) -> u32 {
+    let state = *seed;
+    *seed = state * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+fn rand_float(seed: ptr<function, u32>) -> f32 {
+    return f32(pcg_hash(seed)) * 2.3283064365386963e-10;
+}
+
+fn rand_vec3(seed: ptr<function, u32>) -> vec3<f32> {
+    return vec3<f32>(
+        rand_float(seed),
+        rand_float(seed),
+        rand_float(seed)
+    ) * 2.0 - 1.0;
+}
+
+fn rand_gaussian(seed: ptr<function, u32>) -> f32 {
+    let theta = 2 * 3.1415926 * rand_float(seed);
+    let rho = sqrt(-2.0 * log(max(1.0 - rand_float(seed), 1e-7)));
+    return rho * cos(theta);
+}
+
+fn rand_direction(seed: u32) -> vec3<f32> {
+    var state = seed;
+    
+    state = state * 747796405u + 2891336453u;
+    var wx = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    wx = (wx >> 22u) ^ wx;
+    let u = f32(wx) * 2.3283064365386963e-10;
+    
+    state = state * 747796405u + 2891336453u;
+    var wy = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    wy = (wy >> 22u) ^ wy;
+    let v = f32(wy) * 2.3283064365386963e-10;
+
+    // let u = rand_float(seed);
+    // let v = rand_float(seed);
+
+    let z = u * 2.0 - 1.0;
+    let phi = v * 2.0 * 3.14159265359;
+    let r = sqrt(max(0.0, 1.0 - z * z));
+
+    return vec3<f32>(r * cos(phi), r * sin(phi), z);
 }
 
 /// decodes world space normal from lower 21 bits of u32

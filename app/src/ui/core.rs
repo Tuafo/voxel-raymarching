@@ -19,7 +19,7 @@ pub struct UiCtx<'a, 'b> {
 pub struct UiState {
     pub frame_avg: Duration,
     pub pass_avg: Vec<(String, Duration)>,
-    pub screen_size: glam::UVec2,
+    pub render_resolution: glam::UVec2,
     pub render_scale: f32,
     pub voxel_count: u32,
     pub scene_size: glam::IVec3,
@@ -46,12 +46,11 @@ impl Ui {
         Self {
             renderer: UIRenderer::new(device, out_format, window),
             state: UiState {
-                screen_size: window.size(),
                 render_scale: 0.5,
                 taa: true,
                 fxaa: false,
-                limit_fps: true,
-                max_fps: 60,
+                limit_fps: false,
+                max_fps: 300,
                 ..Default::default()
             },
         }
@@ -94,7 +93,7 @@ impl Ui {
                         ui.label("Resolution");
                         ui.label(format!(
                             "{}x{}",
-                            self.state.screen_size.x, self.state.screen_size.y
+                            self.state.render_resolution.x, self.state.render_resolution.y
                         ));
                         ui.end_row();
 

@@ -61,21 +61,21 @@ fn taa(in: ComputeIn) -> vec3<f32> {
     let texel_size = 1.0 / vec2<f32>(dimensions);
     let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 
-    var min_depth = 1.0;
-    var min_depth_pos = vec2(0);
+    var near_depth = 1.0;
+    var near_depth_pos = vec2(0);
     for (var x = -1; x <= 1; x += 1) {
         for (var y = -1; y <= 1; y += 1) {
             let sample_pos = clamp(pos + vec2(x, y), vec2(0), dimensions);
 
             let depth = textureLoad(tex_depth, sample_pos, 0).r;
-            if depth < min_depth {
-                min_depth = depth;
-                min_depth_pos = sample_pos;
+            if depth < near_depth {
+                near_depth = depth;
+                near_depth_pos = sample_pos;
             }
         }
     }
 
-    let velocity = textureLoad(tex_velocity, min_depth_pos).rg;
+    let velocity = textureLoad(tex_velocity, near_depth_pos).rg;
 
     let acc_uv = uv - velocity;
     if any(acc_uv < vec2(0.0)) || any(acc_uv >= vec2(1.0)) {
