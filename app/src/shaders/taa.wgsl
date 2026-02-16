@@ -76,13 +76,14 @@ fn taa(in: ComputeIn) -> vec3<f32> {
     }
 
     let velocity = textureLoad(tex_velocity, near_depth_pos).rg;
+    var cur_color = textureLoad(tex_color, pos, 0).rgb;
 
     let acc_uv = uv - velocity;
     if any(acc_uv < vec2(0.0)) || any(acc_uv >= vec2(1.0)) {
-        return textureLoad(tex_color, pos, 0).rgb;
+        return cur_color;
     }
 
-    let cur_color = rgb_to_ycocg(textureLoad(tex_color, pos, 0).rgb);
+    cur_color = rgb_to_ycocg(cur_color);
 
     var min_color = cur_color;
     var max_color = cur_color;

@@ -1,5 +1,3 @@
-use image::RgbaImage;
-
 pub fn oklch_to_oklab(lch: glam::Vec3) -> glam::Vec3 {
     glam::vec3(lch.x, lch.y * lch.z.cos(), lch.y * lch.z.sin())
 }
@@ -127,22 +125,4 @@ fn fit_to_gamut(l: f32, max_c: f32, h: f32) -> glam::Vec3 {
         }
     }
     best_rgb
-}
-
-use palette::FromColor;
-use rand::prelude::*;
-
-pub fn generate_from_image(img: &image::RgbaImage) {
-    let size = glam::uvec2(img.dimensions().0, img.dimensions().1);
-    let mut rng = rand::rng();
-
-    const SAMPLES: u32 = 100;
-    for _ in 0..SAMPLES {
-        let x = rng.next_u32() % size.x;
-        let y = rng.next_u32() % size.y;
-        let rgba = img.get_pixel(x, y).0;
-        let srgb = palette::Srgb::from_components((rgba[0], rgba[1], rgba[2])).into_linear::<f32>();
-        let oklab = palette::Oklab::from_color(srgb);
-        dbg!(oklab);
-    }
 }

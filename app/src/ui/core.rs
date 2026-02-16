@@ -30,6 +30,7 @@ pub struct UiState {
     pub camera_far: f64,
     pub sun_altitude: f32,
     pub sun_azimuth: f32,
+    pub sun_direction: glam::Vec3,
     pub shadow_bias: f32,
     pub fxaa: bool,
     pub taa: bool,
@@ -47,6 +48,7 @@ impl Ui {
             renderer: UIRenderer::new(device, out_format, window),
             state: UiState {
                 render_scale: 0.5,
+                shadow_bias: 0.0005,
                 taa: true,
                 fxaa: false,
                 limit_fps: false,
@@ -178,7 +180,11 @@ impl Ui {
                         ui.end_row();
 
                         ui.label("Shadow Bias");
-                        ui.add(egui::Slider::new(&mut self.state.shadow_bias, 0.0..=0.2));
+                        ui.add(egui::Slider::new(&mut self.state.shadow_bias, 0.0..=0.025));
+                        ui.end_row();
+
+                        ui.label("Sun Direction");
+                        ui.label(format!("{:.2}", self.state.sun_direction));
                         ui.end_row();
 
                         ui.end_row();

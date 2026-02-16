@@ -2,6 +2,7 @@
 @group(0) @binding(1) var tex_out_normal: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var tex_out_depth: texture_storage_2d<r32float, write>;
 @group(0) @binding(3) var tex_out_velocity: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(4) var tex_out_illum: texture_storage_2d<rgba16float, write>;
 
 struct VoxelSceneMetadata {
     size: vec3<u32>,
@@ -17,6 +18,8 @@ struct Chunk {
 @group(1) @binding(2) var<storage, read> chunk_indices: array<u32>;
 @group(1) @binding(3) var<storage, read> chunks: array<Chunk>;
 @group(1) @binding(4) var brickmap: texture_storage_3d<r32uint, read>;
+@group(1) @binding(5) var tex_noise: texture_2d<f32>;
+@group(1) @binding(6) var sampler_noise: sampler;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -49,21 +52,17 @@ struct FrameMetadata {
 @group(2) @binding(1) var<uniform> frame: FrameMetadata;
 @group(2) @binding(2) var<uniform> model: Model;
 
-@group(3) @binding(0) var tex_out_illum: texture_storage_2d<rgba16float, write>;
-@group(3) @binding(1) var tex_acc_illum: texture_storage_2d<rgba16float, read>;
-
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
 const DDA_MAX_STEPS: u32 = 300u;
-const ILLUM_ACC_ALPHA: f32 = 0.025;
 const SKY_COLOR: vec3<f32> = vec3(0.5, 0.9, 1.5);
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
     let pos = vec2<i32>(in.id.xy);
-    let res = trace_scene(in);   
+    let res = trace_scene(in);
 
     textureStore(tex_out_albedo, pos, vec4(res.albedo, 1.0));
     textureStore(tex_out_normal, pos, vec4(res.normal, 1.0));
@@ -82,7 +81,7 @@ struct SceneResult {
 
 fn trace_scene(in: ComputeIn) -> SceneResult {
     let pos = vec2<i32>(in.id.xy);
-    let dimensions = textureDimensions(tex_out_albedo).xy;
+    let dimensions = vec2<i32>(textureDimensions(tex_out_albedo).xy);
     let texel_size = 1.0 / vec2<f32>(dimensions);
 
     let ray = raymarch(start_ray(vec2<u32>(pos)));
@@ -108,9 +107,9 @@ fn trace_scene(in: ComputeIn) -> SceneResult {
     let prev_cs_pos = environment.prev_camera.view_proj * ws_pos_h;
     let prev_ndc = prev_cs_pos.xy / prev_cs_pos.w;
     let prev_uv = prev_ndc * vec2(0.5, -0.5) + 0.5;
-    
+
     let velocity = uv - prev_uv;
-    
+
     let albedo = palette_color(ray.palette_index);
     let ws_surface_normal = normalize(model.normal_transform * ray.surface_normal);
     let ws_hit_normal = normalize(model.normal_transform * ray.hit_normal);
@@ -121,34 +120,23 @@ fn trace_scene(in: ComputeIn) -> SceneResult {
     // let in_shadow = raymarch_shadow(Ray(shadow_ray_origin, shadow_ray_dir, 0.0, true));
     // let in_shadow = false
 
-    var illumination = vec3(0.0);
-    {
-        var illum_ray: Ray;
-        illum_ray.in_bounds = true;
-        illum_ray.t_start = 0.0;
-        illum_ray.origin = ray.local_pos + environment.shadow_bias * ray.hit_normal;
+    let illumination = trace_illumination(pos, dimensions, ray);
+    let shadow = trace_shadow(pos, dimensions, ray);
+    // let illumination = vec3(1.0);
+    // let acc_illum = textureLoad(tex_acc_illum, pos, 0).rgb;
+    // let illumination = ILLUM_ACC_ALPHA * cur_illum + (1.0 - ILLUM_ACC_ALPHA) * acc_illum;
 
-        let fragment_id = in.id.x + in.id.y * dimensions.x;
-        var seed = fragment_id * 1973u + frame.frame_id * 927u + 26699u;
-        var dir = rand_direction(seed);
-        dir = dir * sign(dot(ray.surface_normal, dir)); // reflect into the normal hemisphere
-        if any(abs(dir) > vec3(0.0001)) {
-            illum_ray.direction = normalize(dir);
-            
-            let occluded = raymarch_shadow(illum_ray);
-            let cur_illum = select(vec3(1.0), vec3(0.0), occluded);
-    
-            let acc_illum = textureLoad(tex_acc_illum, pos).rgb;
-    
-            illumination = ILLUM_ACC_ALPHA * cur_illum + (1.0 - ILLUM_ACC_ALPHA) * acc_illum;
-        }
-    }
+
+    // let noise_dimensions = textureDimensions(noise).xy;
+    // var noise = textureLoad(noise, in.id.xy % noise_dimensions, 0).rgb;
 
     var res: SceneResult;
     res.albedo = albedo;
     res.normal = ws_surface_normal;
     res.depth = depth;
-    res.illumination = illumination;
+    res.illumination = vec3(shadow);
+    res.velocity = velocity;
+    // res.illumination = noise;
     return res;
 }
 
@@ -157,23 +145,155 @@ fn normalized_depth(ws_pos: vec3<f32>) -> f32 {
     return (depth - environment.camera.near) / (environment.camera.far - environment.camera.near);
 }
 
-struct Ray {
-    ls_origin: vec3<f32>,
+fn trace_illumination(pos: vec2<i32>, dimensions: vec2<i32>, hit: RaymarchResult) -> f32 {
+    var illum_ray: Ray;
+    illum_ray.in_bounds = true;
+    illum_ray.t_start = 0.0;
+    illum_ray.origin = hit.local_pos + environment.shadow_bias * hit.hit_normal;
+
+    let fragment_id = pos.x + pos.y * dimensions.x;
+    var seed = u32(fragment_id) * 1973u + frame.frame_id * 927u + 26699u;
+    var dir = rand_direction(seed);
+    dir = normalize(dir);
+    // dir = normalize(vec3(0.5, 0.5, 0.5));
+    dir = dir * sign(dot(hit.surface_normal, dir)); // reflect into the normal hemisphere
+    illum_ray.direction = dir;
+
+    // let occluded = raymarch_sparse(illum_ray);
+    let occluded = false;
+    return select(1.0, 0.0, occluded);
+}
+
+fn trace_shadow(pos: vec2<i32>, dimensions: vec2<i32>, hit: RaymarchResult) -> f32 {
+    // let fragment_id = pos.x + pos.y * dimensions.x;
+    // var seed = u32(fragment_id) * 1973u + frame.frame_id * 927u + 26699u;
+    // var dir_offset = normalize(rand_direction(seed));
+    let noise = per_frame_noise(pos);
+    // let sun_right = normalize(cross(vec3(0.0, 0.0, 1.0), -environment.sun_direction));
+    // let sun_up = normalize(cross(-environment.sun_direction, sun_right));
+
+    // let basis_offset = concentric_disk_sample(noise.x, noise.y);
+    // let dir_offset = (sun_right * basis_offset.x + sun_up * basis_offset.y) * 0.02;
+
+
+    // let u = noise.x;
+    // let v = noise.y;
+
+    // let z = u * 2.0 - 1.0;
+    // let phi = v * 2.0 * 3.14159265359;
+    // let r = sqrt(max(0.0, 1.0 - z * z));
+
+    // let dir_offset= normalize(vec3<f32>(r * cos(phi), r * sin(phi), z)) * 0.02;
+    let dir_offset = normalize(noise * 2.0 - 1.0) * 0.0175;
+
+    var ray: SparseRay;
+    ray.origin = hit.local_pos + environment.shadow_bias * hit.hit_normal;
+    ray.direction = normalize(environment.sun_direction + dir_offset);
+
+    let occluded = raymarch_shadow(ray);
+    // let occluded = false;
+    return select(1.0, 0.0, occluded);
+}
+
+fn per_frame_noise(pos: vec2<i32>) -> vec3<f32> {
+    const PHI: f32 = 1.61803398875;
+    const SQRT_2: f32 = 1.41421356237;
+    const SQRT_3: f32 = 1.73205080757;
+    let ctr = f32(frame.frame_id % 500);
+    let noise_uv = (vec2<f32>(pos) + 0.5) / vec2<f32>(textureDimensions(tex_noise).xy);
+    var noise = textureSampleLevel(tex_noise, sampler_noise, noise_uv, 0.0).rgb;
+    noise = (noise + vec3(PHI, SQRT_2, SQRT_3) * ctr) % 1.0;
+    return noise;
+}
+
+fn concentric_disk_sample(u: f32, v: f32) -> vec2<f32> {
+    let offset = 2.0 * vec2<f32>(u, v) - 1.0;
+    if (offset.x == 0.0 && offset.y == 0.0) { return vec2(0.0); }
+
+    var theta: f32;
+    var r: f32;
+
+    if (abs(offset.x) > abs(offset.y)) {
+        r = offset.x;
+        theta = (3.14159 / 4.0) * (offset.y / offset.x);
+    } else {
+        r = offset.y;
+        theta = (3.14159 / 2.0) - (3.14159 / 4.0) * (offset.x / offset.y);
+    }
+    return vec2(r * cos(theta), r * sin(theta));
+}
+
+struct SparseRay {
     origin: vec3<f32>,
     direction: vec3<f32>,
-    t_start: f32,
-    in_bounds: bool,
 }
 
-struct RaymarchResult {
+struct SparseRaymarchResult {
     hit: bool,
-    palette_index: u32,
-    surface_normal: vec3<f32>,
-    hit_normal: vec3<f32>,
-    local_pos: vec3<f32>,
+    distance: f32,
 }
 
-fn raymarch_shadow(ray: Ray) -> bool {
+// fn raymarch_sparse(ray: SparseRay) -> SparseRaymarchResult {
+//     let origin = ray.origin / 8.0;
+//     let dir = ray.direction;
+
+//     let step = vec3<i32>(sign(dir));
+//     if all(step == vec3(0)) {
+//         return SparseRaymarchResult(false, 0.0);
+//     }
+
+//         return SparseRaymarchResult(false, 0.0);
+//     let ray_delta = vec3(1.0) / max(vec3(1e-7), abs(dir));
+
+//     var pos = vec3<i32>(floor(origin));
+//     var ray_length = ray_delta * (sign(dir) * (vec3<f32>(pos) - origin) + (sign(dir) * 0.5) + 0.5);
+//     var prev_ray_length = vec3<f32>(0.0);
+//     var mask = vec3(false);
+
+//     for (var i = 0u; i < 256u && all(pos < vec3<i32>(scene.size)) && all(pos >= vec3(0)); i++) {
+
+//         let chunk_pos_index = u32(pos.z) * scene.size.x * scene.size.y + u32(pos.y) * scene.size.x + u32(pos.x);
+//         let chunk_index = chunk_indices[chunk_pos_index];
+
+//         if chunk_index != 0u {
+//             // if i > 6u {
+//             //     return true;
+//             // }
+//             // now we do dda within the brick
+//             var chunk = chunks[chunk_index - 1u];
+
+//             let t_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
+//             let brick_origin = clamp((origin - vec3<f32>(pos) + dir * (t_entry + 1e-6)) * 8.0, vec3(1e-6), vec3(8.0 - 1e-6));
+
+//             var brick_pos = vec3<i32>(floor(brick_origin));
+//             var brick_ray_length = ray_delta * (sign(dir) * (floor(brick_origin) - brick_origin) + (sign(dir) * 0.5) + 0.5);
+
+//             prev_ray_length = vec3<f32>(0.0);
+
+//             for (var j = 0u; j < 100u && all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)); j++) {
+//                 let voxel_index = (brick_pos.z << 6u) | (brick_pos.y << 3u) | brick_pos.x;
+//                 if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
+//                     return true;
+//                 }
+
+//                 prev_ray_length = brick_ray_length;
+
+//                 mask = step_mask(brick_ray_length);
+//                 brick_ray_length += vec3<f32>(mask) * ray_delta;
+//                 brick_pos += vec3<i32>(mask) * step;
+//             }
+//         }
+
+//         prev_ray_length = ray_length;
+
+//         mask = step_mask(ray_length);
+//         ray_length += vec3<f32>(mask) * ray_delta;
+//         pos += vec3<i32>(mask) * step;
+//     }
+//     return false;
+// }
+
+fn raymarch_shadow(ray: SparseRay) -> bool {
     let origin = ray.origin / 8.0;
     let dir = ray.direction;
 
@@ -185,12 +305,19 @@ fn raymarch_shadow(ray: Ray) -> bool {
     var prev_ray_length = vec3<f32>(0.0);
     var mask = vec3(false);
 
-    for (var i = 0u; i < DDA_MAX_STEPS && all(pos < vec3<i32>(scene.size)) && all(pos >= vec3(0)); i++) {
+    if all(step == vec3(0)) {
+        return false;
+    }
+
+    for (var i = 0u; i < 256u && all(pos < vec3<i32>(scene.size)) && all(pos >= vec3(0)); i++) {
 
         let chunk_pos_index = u32(pos.z) * scene.size.x * scene.size.y + u32(pos.y) * scene.size.x + u32(pos.x);
         let chunk_index = chunk_indices[chunk_pos_index];
 
         if chunk_index != 0u {
+            // if i > 6u {
+            //     return true;
+            // }
             // now we do dda within the brick
             var chunk = chunks[chunk_index - 1u];
 
@@ -202,7 +329,7 @@ fn raymarch_shadow(ray: Ray) -> bool {
 
             prev_ray_length = vec3<f32>(0.0);
 
-            while all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)) {
+            for (var j = 0u; j < 100u && all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)); j++) {
                 let voxel_index = (brick_pos.z << 6u) | (brick_pos.y << 3u) | brick_pos.x;
                 if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
                     return true;
@@ -223,6 +350,22 @@ fn raymarch_shadow(ray: Ray) -> bool {
         pos += vec3<i32>(mask) * step;
     }
     return false;
+}
+
+struct Ray {
+    ls_origin: vec3<f32>,
+    origin: vec3<f32>,
+    direction: vec3<f32>,
+    t_start: f32,
+    in_bounds: bool,
+}
+
+struct RaymarchResult {
+    hit: bool,
+    palette_index: u32,
+    surface_normal: vec3<f32>,
+    hit_normal: vec3<f32>,
+    local_pos: vec3<f32>,
 }
 
 fn raymarch(ray: Ray) -> RaymarchResult {
@@ -444,12 +587,12 @@ fn rand_gaussian(seed: ptr<function, u32>) -> f32 {
 
 fn rand_direction(seed: u32) -> vec3<f32> {
     var state = seed;
-    
+
     state = state * 747796405u + 2891336453u;
     var wx = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
     wx = (wx >> 22u) ^ wx;
     let u = f32(wx) * 2.3283064365386963e-10;
-    
+
     state = state * 747796405u + 2891336453u;
     var wy = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
     wy = (wy >> 22u) ^ wy;
