@@ -1,20 +1,14 @@
-use std::{
-    f32,
-    io::{BufReader, Cursor},
-    sync::Arc,
-    time::Duration,
-};
+use std::{f32, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use image::GenericImageView;
 use wgpu::util::DeviceExt;
 
 use crate::{
     SizedWindow,
     engine::Engine,
+    models::MODELS,
     renderer::{
         buffers::{self, CameraDataBuffer, EnvironmentDataBuffer, ModelDataBuffer},
-        loader::Voxelizer,
         quad::Quad,
     },
     ui::{Ui, UiCtx},
@@ -71,6 +65,8 @@ struct BindGroupLayouts {
     lighting_resolve_swap: wgpu::BindGroupLayout,
     deferred_gbuffer: wgpu::BindGroupLayout,
     deferred_swap: wgpu::BindGroupLayout,
+    deferred_static: wgpu::BindGroupLayout,
+    deferred_per_frame: wgpu::BindGroupLayout,
     taa_per_frame: wgpu::BindGroupLayout,
     taa_input: wgpu::BindGroupLayout,
     taa_output: wgpu::BindGroupLayout,
@@ -88,6 +84,8 @@ struct BindGroups {
     deferred_gbuffer: Option<wgpu::BindGroup>,
     deferred_swap_a: Option<wgpu::BindGroup>,
     deferred_swap_b: Option<wgpu::BindGroup>,
+    deferred_static: wgpu::BindGroup,
+    deferred_per_frame: wgpu::BindGroup,
     taa_per_frame: wgpu::BindGroup,
     taa_input: Option<wgpu::BindGroup>,
     taa_output_a: Option<wgpu::BindGroup>,
@@ -109,7 +107,8 @@ struct Textures {
     out_color_a: Option<wgpu::Texture>,
     out_color_b: Option<wgpu::Texture>,
     voxel_brickmap: wgpu::Texture,
-    noise: wgpu::Texture,
+    noise_cos_hemisphere_gauss: wgpu::Texture,
+    noise_uniform_gauss: wgpu::Texture,
 }
 
 struct Samplers {
@@ -250,7 +249,7 @@ impl Renderer {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2,
+                            view_dimension: wgpu::TextureViewDimension::D3,
                             multisampled: false,
                         },
                         count: None,
@@ -426,6 +425,58 @@ impl Renderer {
                     count: None,
                 }],
             }),
+            deferred_static: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("deferred_static"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                ],
+            }),
+            deferred_per_frame: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("deferred_per_frame"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            }),
             taa_per_frame: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("taa_per_frame"),
                 entries: &[
@@ -573,7 +624,12 @@ impl Renderer {
             }),
             deferred: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("deferred"),
-                bind_group_layouts: &[&bg_layouts.deferred_gbuffer, &bg_layouts.deferred_swap],
+                bind_group_layouts: &[
+                    &bg_layouts.deferred_gbuffer,
+                    &bg_layouts.deferred_swap,
+                    &bg_layouts.deferred_static,
+                    &bg_layouts.deferred_per_frame,
+                ],
                 immediate_size: 0,
             }),
             taa: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -695,9 +751,10 @@ impl Renderer {
         let scene = {
             // let src = std::include_bytes!("../../assets/san_miguel.glb");
             // let src = std::include_bytes!("../../assets/bistro.glb");
-            let src = std::include_bytes!("../../assets/sponza.glb");
-            let mut src = BufReader::new(Cursor::new(src));
-            Voxelizer::load_gltf(&mut src, device, queue).unwrap()
+            // let src = std::include_bytes!("../../assets/models/sponza.glb");
+            // let mut src = BufReader::new(Cursor::new(src));
+            // voxelize(&mut src, device, queue).unwrap()
+            MODELS.sponza.load(device, queue).unwrap()
         };
 
         let textures = Textures {
@@ -711,8 +768,9 @@ impl Renderer {
             deferred_output: None,
             out_color_a: None,
             out_color_b: None,
-            voxel_brickmap: scene.tex_brickmap,
-            noise: blue_noise(device, queue).unwrap(),
+            voxel_brickmap: scene.data.tex_brickmap,
+            noise_cos_hemisphere_gauss: noise_cos_hemisphere_gauss(device, queue).unwrap(),
+            noise_uniform_gauss: noise_uniform_gauss(device, queue).unwrap(),
         };
 
         let samplers = Samplers {
@@ -749,15 +807,15 @@ impl Renderer {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("voxel_scene_metadata"),
                     contents: bytemuck::cast_slice(&[BufferVoxelSceneMetadata {
-                        size_chunks: scene.size_chunks,
+                        size_chunks: scene.meta.size_chunks,
                         _pad: 0,
                     }]),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 })
             },
-            voxel_palette: scene.buffer_palette,
-            voxel_chunk_indices: scene.buffer_chunk_indices,
-            voxel_chunks: scene.buffer_chunks,
+            voxel_palette: scene.data.buffer_palette,
+            voxel_chunk_indices: scene.data.buffer_chunk_indices,
+            voxel_chunks: scene.data.buffer_chunks,
 
             environment: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("environment"),
@@ -802,7 +860,9 @@ impl Renderer {
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &buffers.voxel_chunks,
                             offset: 0,
-                            size: std::num::NonZeroU64::new((scene.allocated_chunks * 64) as u64),
+                            size: std::num::NonZeroU64::new(
+                                (scene.meta.allocated_chunks * 64) as u64,
+                            ),
                         }),
                     },
                     wgpu::BindGroupEntry {
@@ -819,12 +879,13 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 5,
-                        resource: wgpu::BindingResource::TextureView(&textures.noise.create_view(
-                            &wgpu::TextureViewDescriptor {
-                                label: Some("blue_noise"),
-                                ..Default::default()
-                            },
-                        )),
+                        resource: wgpu::BindingResource::TextureView(
+                            &textures.noise_cos_hemisphere_gauss.create_view(
+                                &wgpu::TextureViewDescriptor {
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
                     },
                     wgpu::BindGroupEntry {
                         binding: 6,
@@ -856,6 +917,44 @@ impl Renderer {
             deferred_gbuffer: None,
             deferred_swap_a: None,
             deferred_swap_b: None,
+            deferred_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("deferred_static"),
+                layout: &bg_layouts.deferred_static,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Sampler(&samplers.linear),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(
+                            &textures.noise_uniform_gauss.create_view(
+                                &wgpu::TextureViewDescriptor {
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    },
+                ],
+            }),
+            deferred_per_frame: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("deferred_per_frame"),
+                layout: &bg_layouts.deferred_per_frame,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffers.environment.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buffers.frame_metadata.as_entire_binding(),
+                    },
+                ],
+            }),
             taa_per_frame: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("taa_per_frame"),
                 layout: &bg_layouts.taa_per_frame,
@@ -894,8 +993,8 @@ impl Renderer {
 
         ui.state.sun_azimuth = -2.5;
         ui.state.sun_altitude = 1.3;
-        ui.state.voxel_count = scene.voxel_count;
-        ui.state.scene_size = scene.size;
+        ui.state.voxel_count = scene.meta.voxel_count;
+        ui.state.scene_size = scene.meta.size_voxels.as_ivec3();
 
         let mut _self = Self {
             pipeline_layouts,
@@ -1427,6 +1526,10 @@ impl Renderer {
                     prev_camera,
                     jitter: HALTON_16[(self.frame_id as usize + 1) & 0xf],
                     prev_jitter: HALTON_16[(self.frame_id as usize) & 0xf],
+                    shadow_spread: ctx.ui.state.shadow_spread,
+                    filter_shadows: ctx.ui.state.filter_shadows as u32,
+                    shadow_filter_radius: ctx.ui.state.shadow_filter_radius,
+                    _pad: 0.0,
                 }]),
             );
 
@@ -1526,6 +1629,8 @@ impl Renderer {
                 },
                 &[],
             );
+            pass.set_bind_group(2, &self.bind_groups.deferred_static, &[]);
+            pass.set_bind_group(3, &self.bind_groups.deferred_per_frame, &[]);
 
             pass.insert_debug_marker("deferred");
             pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
@@ -1721,11 +1826,11 @@ const HALTON_16: [glam::Vec2; 16] = [
     glam::vec2(0.031250, 0.592593),
 ];
 
-fn blue_noise(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
-    let src = std::include_bytes!("../../assets/noise.png");
+fn noise_uniform_gauss(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
+    let src = std::include_bytes!("../../assets/noise/vector3_uniform_gauss1_0.png");
     let img = image::load_from_memory_with_format(src, image::ImageFormat::Png)?.to_rgba8();
     let res = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("blue_noise"),
+        label: Some("noise_uniform_gauss"),
         size: wgpu::Extent3d {
             width: img.width(),
             height: img.height(),
@@ -1757,5 +1862,67 @@ fn blue_noise(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Textur
             depth_or_array_layers: 1,
         },
     );
+    Ok(res)
+}
+
+fn noise_cos_hemisphere_gauss(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<wgpu::Texture> {
+    macro_rules! include_images {
+        ($($n:expr),*) => {
+            [
+                $(std::include_bytes!(concat!("../../assets/noise/sphere_coshemi_gauss1_0_exp0101_separate05_", $n, ".png"))),*
+            ]
+        }
+    }
+    static IMAGE_SRC: [&[u8]; 32] = include_images!(
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31
+    );
+    let images = IMAGE_SRC
+        .iter()
+        .map(|src| {
+            image::load_from_memory_with_format(src, image::ImageFormat::Png)
+                .map(|img| img.to_rgba8())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let res = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("blue_noise"),
+        size: wgpu::Extent3d {
+            width: images[0].width(),
+            height: images[0].height(),
+            depth_or_array_layers: 32,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (i, img) in images.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &res,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: i as u32,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            img,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * img.width()),
+                rows_per_image: Some(img.height()),
+            },
+            wgpu::Extent3d {
+                width: img.width(),
+                height: img.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+    }
     Ok(res)
 }

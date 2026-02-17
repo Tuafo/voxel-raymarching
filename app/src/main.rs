@@ -1,6 +1,7 @@
 mod engine;
 mod renderer;
 mod ui;
+include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
 use std::{sync::Arc, time::Instant};
 

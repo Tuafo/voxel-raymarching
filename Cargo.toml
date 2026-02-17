@@ -1,12 +1,9 @@
 [workspace]
-members = ["app", "vox", "models"]
+members = ["app", "loader"]
 default-members=["app"]
 resolver = "2"
 
 [profile.dev.package."*"]
-opt-level = 3
-
-[profile.dev.package.vox]
 opt-level = 3
 
 [profile.release]

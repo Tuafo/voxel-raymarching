@@ -32,6 +32,9 @@ pub struct UiState {
     pub sun_azimuth: f32,
     pub sun_direction: glam::Vec3,
     pub shadow_bias: f32,
+    pub shadow_spread: f32,
+    pub filter_shadows: bool,
+    pub shadow_filter_radius: f32,
     pub fxaa: bool,
     pub taa: bool,
     pub limit_fps: bool,
@@ -49,6 +52,9 @@ impl Ui {
             state: UiState {
                 render_scale: 0.5,
                 shadow_bias: 0.0005,
+                shadow_spread: 0.015,
+                filter_shadows: true,
+                shadow_filter_radius: 7.0,
                 taa: true,
                 fxaa: false,
                 limit_fps: false,
@@ -181,6 +187,21 @@ impl Ui {
 
                         ui.label("Shadow Bias");
                         ui.add(egui::Slider::new(&mut self.state.shadow_bias, 0.0..=0.025));
+                        ui.end_row();
+
+                        ui.label("Shadow Spread");
+                        ui.add(egui::Slider::new(&mut self.state.shadow_spread, 0.0..=0.05));
+                        ui.end_row();
+
+                        ui.label("Filter Shadows");
+                        ui.checkbox(&mut self.state.filter_shadows, "");
+                        ui.end_row();
+
+                        ui.label("Shadow Filter Radius");
+                        ui.add(egui::Slider::new(
+                            &mut self.state.shadow_filter_radius,
+                            0.0..=20.0,
+                        ));
                         ui.end_row();
 
                         ui.label("Sun Direction");

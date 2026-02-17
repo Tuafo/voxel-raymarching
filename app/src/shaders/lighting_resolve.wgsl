@@ -9,15 +9,17 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-const ACC_ALPHA: f32 = 0.1;
+const SHADOW_ACC_ALPHA: f32 = 0.1;
+const RADIANCE_ACC_ALPHA: f32 = 0.1;
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
-    let illum = vec3(resolve_illum(in));
+    let illum = resolve_illum(in);
+    // let illum = textureLoad(tex_cur_illum, in.id.xy, 0).rgb;
     textureStore(tex_out_illum, vec2<i32>(in.id.xy), vec4(illum, 1.0));
 }
 
-fn resolve_illum(in: ComputeIn) -> f32 {
+fn resolve_illum(in: ComputeIn) -> vec3<f32> {
     let dimensions = vec2<i32>(textureDimensions(tex_cur_illum).xy);
     let pos = vec2<i32>(in.id.xy);
 
@@ -25,22 +27,24 @@ fn resolve_illum(in: ComputeIn) -> f32 {
     let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 
     let velocity = textureLoad(tex_velocity, pos).rg;
-    // let cur = sample_bilateral(pos);
-    let cur = filter_spatial(uv);
 
+    let cur = textureLoad(tex_cur_illum, pos, 0).rgb;
     let acc_uv = uv - velocity;
     if any(acc_uv < vec2(0.0)) || any(acc_uv >= vec2(1.0)) {
-        return cur.value;
+        return cur;
     }
+    let acc = sample_catmull_rom_5(acc_uv, vec2<f32>(dimensions));
 
-    // let acc = textureSampleLevel(tex_acc_illum, main_sampler, acc_uv, 0.0).rgb;
-    var acc = sample_catmull_rom_5(acc_uv, vec2<f32>(dimensions)).r;
-    acc = clamp(acc, cur.min - 0.1, cur.max + 0.1);
+    let cur_shadow = cur.r;
+    let acc_shadow = acc.r;
+    let shadow = mix(acc_shadow, cur_shadow, SHADOW_ACC_ALPHA);
 
-    let res = mix(acc, cur.value, ACC_ALPHA);
-    // let res = cur;
-    // let res = textureLoad(tex_cur_illum, pos).rgb;
-    return res;
+    let cur_radiance = cur.g;
+    let acc_radiance = acc.g;
+    let radiance = mix(acc_radiance, cur_radiance, RADIANCE_ACC_ALPHA);
+    // let radiance = cur_radiance;
+
+    return vec3(shadow, radiance, 0.0);
 }
 
 struct FilterResult {

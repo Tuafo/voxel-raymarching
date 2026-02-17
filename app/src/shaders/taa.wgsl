@@ -5,6 +5,9 @@ struct Environment {
     prev_camera: Camera,
     jitter: vec2<f32>,
     prev_jitter: vec2<f32>,
+    shadow_spread: f32,
+    filter_shadows: u32,
+    shadow_filter_radius: f32,
 }
 struct Camera {
     view_proj: mat4x4<f32>,

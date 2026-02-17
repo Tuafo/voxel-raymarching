@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use models::{Gltf, Scene};
+use loader::gltf::{Gltf, Scene};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -33,7 +33,7 @@ impl ModelViewer {
         format: wgpu::TextureFormat,
         engine: &Engine,
     ) -> anyhow::Result<Self> {
-        let src = std::include_bytes!("../../assets/sponza.glb");
+        let src = std::include_bytes!("../../assets/models/sponza.glb");
         let mut src = BufReader::new(Cursor::new(src));
 
         let gltf = Gltf::parse(&mut src)?;
@@ -55,8 +55,12 @@ impl ModelViewer {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: match tex.encoding {
-                        models::scene::TextureEncoding::Linear => wgpu::TextureFormat::Rgba8Unorm,
-                        models::scene::TextureEncoding::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+                        loader::gltf::scene::TextureEncoding::Linear => {
+                            wgpu::TextureFormat::Rgba8Unorm
+                        }
+                        loader::gltf::scene::TextureEncoding::Srgb => {
+                            wgpu::TextureFormat::Rgba8UnormSrgb
+                        }
                     },
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
@@ -155,7 +159,7 @@ impl ModelViewer {
                             tangent_buffer,
                             uv_buffer,
                             index_format: match p.indices.component_type {
-                                models::schema::ComponentType::UnsignedShort => {
+                                loader::gltf::schema::ComponentType::UnsignedShort => {
                                     wgpu::IndexFormat::Uint16
                                 }
                                 _ => wgpu::IndexFormat::Uint32,

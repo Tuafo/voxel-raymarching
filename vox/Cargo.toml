@@ -1,8 +1,0 @@
-[package]
-name = "vox"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-glam = { version = "0.31.0", features = ["serde"] }
-bytemuck = { version = "1.24.0", features = ["derive"] }

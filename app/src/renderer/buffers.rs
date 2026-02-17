@@ -7,6 +7,10 @@ pub struct EnvironmentDataBuffer {
     pub prev_camera: CameraDataBuffer,
     pub jitter: glam::Vec2,
     pub prev_jitter: glam::Vec2,
+    pub shadow_spread: f32,
+    pub filter_shadows: u32,
+    pub shadow_filter_radius: f32,
+    pub _pad: f32,
 }
 
 #[repr(C)]
