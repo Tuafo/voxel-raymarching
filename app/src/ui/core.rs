@@ -1,6 +1,6 @@
 use std::{f64::consts::PI, time::Duration};
 
-use crate::{SizedWindow, ui::renderer::UIRenderer};
+use crate::{SizedWindow, models, ui::renderer::UIRenderer};
 
 pub struct Ui {
     pub state: UiState,
@@ -120,9 +120,14 @@ impl Ui {
                         }
 
                         ui.end_row();
-                        ui.label(egui::RichText::new("Render").strong());
+                        if ui.button("Reload Scene").clicked() {
+                            let src = std::include_bytes!("../../assets/models/sponza.glb");
+                            let mut src = std::io::BufReader::new(std::io::Cursor::new(src));
+                            loader::voxelize(&mut src, ctx.device, ctx.queue, None).unwrap();
+                        }
                         ui.end_row();
 
+                        ui.end_row();
                         ui.label("Cap FPS");
                         ui.checkbox(&mut self.state.limit_fps, "");
                         ui.end_row();

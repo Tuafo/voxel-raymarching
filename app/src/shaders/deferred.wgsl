@@ -70,6 +70,8 @@ fn compute_main(in: ComputeIn) {
 
     // color *= 0.5;
     // color += vec3(abs(velocity) * 50.0, 0.0);
+    // color *= 0.00001;
+    // color += normal;
 
     // color *= 0.0001;
     // color += shadow_factor;

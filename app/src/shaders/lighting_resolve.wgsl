@@ -3,7 +3,7 @@
 @group(0) @binding(2) var tex_cur_illum: texture_2d<f32>;
 
 @group(1) @binding(0) var tex_acc_illum: texture_2d<f32>;
-@group(1) @binding(1) var tex_out_illum: texture_storage_2d<rgba16float, write>;
+@group(1) @binding(1) var tex_out_illum: texture_storage_2d<rgba8unorm, write>;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,

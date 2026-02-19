@@ -127,7 +127,7 @@ fn compute_main(in: ComputeIn) {
                         normal_packed = encode_normal_octahedral(ws_normal);
                     }
 
-                    textureStore(out_voxels, vec3<i32>(vec3(x, y, z)), vec4<u32>(albedo_packed, normal_packed, 0u, 0u));
+                    textureStore(out_voxels, vec3<i32>(vec3(x, y, z)), vec4<u32>(albedo_packed, normal_packed, primitive.material_id, 0u));
                 }
             }
         }

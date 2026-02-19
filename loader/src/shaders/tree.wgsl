@@ -35,9 +35,10 @@ var<workgroup> brick: BrickGroup;
 @compute @workgroup_size(8, 8, 8)
 fn compute_main(in: ComputeIn) {
 
-    let raw = textureLoad(raw_voxels, vec3<i32>(in.voxel_pos)).rg;
+    let raw = textureLoad(raw_voxels, vec3<i32>(in.voxel_pos)).rgb;
     let albedo_packed = raw.r;
     let normal_packed = raw.g;
+    let material_id = raw.b;
 
     let albedo_srgb = vec3<f32>(
         f32(albedo_packed >> 24u) / 255.0,
