@@ -1,22 +1,23 @@
 struct Environment {
-    sun_direction: vec3<f32>,
-    shadow_bias: f32,
-    camera: Camera,
-    prev_camera: Camera,
-    jitter: vec2<f32>,
-    prev_jitter: vec2<f32>,
-    shadow_spread: f32,
-    filter_shadows: u32,
-    shadow_filter_radius: f32,
+	sun_direction: vec3<f32>,
+	shadow_bias: f32,
+	camera: Camera,
+	prev_camera: Camera,
+	shadow_spread: f32,
+	filter_shadows: u32,
+	shadow_filter_radius: f32,
+	max_ambient_distance: u32,
+    smooth_normal_factor: f32,
 }
 struct Camera {
-    view_proj: mat4x4<f32>,
-    inv_view_proj: mat4x4<f32>,
-    ws_position: vec3<f32>,
-    forward: vec3<f32>,
-    near: f32,
-    far: f32,
-    fov: f32,
+	view_proj: mat4x4<f32>,
+	inv_view_proj: mat4x4<f32>,
+	ws_position: vec3<f32>,
+	forward: vec3<f32>,
+	near: f32,
+	jitter: vec2<f32>,
+	far: f32,
+	fov: f32,
 }
 struct FrameMetadata {
     frame_id: u32,
@@ -64,14 +65,14 @@ fn taa(in: ComputeIn) -> vec3<f32> {
     let texel_size = 1.0 / vec2<f32>(dimensions);
     let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 
-    var near_depth = 1.0;
-    var near_depth_pos = vec2(0);
+    var near_depth = 100000.0;
+    var near_depth_pos = pos;
     for (var x = -1; x <= 1; x += 1) {
         for (var y = -1; y <= 1; y += 1) {
             let sample_pos = clamp(pos + vec2(x, y), vec2(0), dimensions);
 
             let depth = textureLoad(tex_depth, sample_pos, 0).r;
-            if depth < near_depth {
+            if depth < near_depth && depth >= 0.0 {
                 near_depth = depth;
                 near_depth_pos = sample_pos;
             }

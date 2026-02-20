@@ -457,9 +457,9 @@ impl ModelViewer {
     }
 
     pub fn frame<'a>(&mut self, ctx: &'a mut RendererCtx) {
-        let camera_data = CameraDataBuffer::from_camera(&ctx.engine.camera);
-        ctx.queue
-            .write_buffer(&self.buffer_camera, 0, bytemuck::cast_slice(&[camera_data]));
+        // let camera_data = CameraDataBuffer::from_camera(&ctx.engine.camera);
+        // ctx.queue
+        // .write_buffer(&self.buffer_camera, 0, bytemuck::cast_slice(&[camera_data]));
 
         let surface_texture = ctx.surface.get_current_texture().unwrap();
         let surface_view = surface_texture

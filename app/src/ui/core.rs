@@ -35,6 +35,8 @@ pub struct UiState {
     pub shadow_spread: f32,
     pub filter_shadows: bool,
     pub shadow_filter_radius: f32,
+    pub voxel_normal_factor: f32,
+    pub ambient_ray_max_distance: u32,
     pub fxaa: bool,
     pub taa: bool,
     pub limit_fps: bool,
@@ -55,6 +57,8 @@ impl Ui {
                 shadow_spread: 0.015,
                 filter_shadows: true,
                 shadow_filter_radius: 7.0,
+                ambient_ray_max_distance: 10,
+                voxel_normal_factor: 0.5,
                 taa: true,
                 fxaa: false,
                 limit_fps: false,
@@ -188,6 +192,20 @@ impl Ui {
                             )
                             .suffix(" rad"),
                         );
+                        ui.end_row();
+
+                        ui.label("Per Voxel Normals");
+                        ui.add(egui::Slider::new(
+                            &mut self.state.voxel_normal_factor,
+                            0.0..=1.0,
+                        ));
+                        ui.end_row();
+
+                        ui.label("Ambient Max Distance");
+                        ui.add(egui::Slider::new(
+                            &mut self.state.ambient_ray_max_distance,
+                            0..=2000,
+                        ));
                         ui.end_row();
 
                         ui.label("Shadow Bias");

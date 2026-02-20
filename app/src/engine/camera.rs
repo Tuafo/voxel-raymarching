@@ -17,6 +17,8 @@ pub struct Camera {
     pub near: f64,
     pub far: f64,
     pub size: glam::UVec2,
+    pub view: glam::DMat4,
+    pub proj: glam::DMat4,
     pub view_proj: glam::DMat4,
     pub inv_view_proj: glam::DMat4,
 }
@@ -32,8 +34,10 @@ impl Camera {
             rotation: glam::dvec3(0.0, 0.0, 0.0),
             fov: 90.0 * (PI / 180.0),
             near: 0.01,
-            far: 100.0,
+            far: 50.0,
             size,
+            view: glam::DMat4::IDENTITY,
+            proj: glam::DMat4::IDENTITY,
             view_proj: glam::DMat4::IDENTITY,
             inv_view_proj: glam::DMat4::IDENTITY,
             ..Default::default()
@@ -77,14 +81,14 @@ impl Camera {
 
         self.position += self.velocity * (delta_ms * 0.005);
 
-        let view = glam::DMat4::look_at_rh(self.position, self.position + self.forward, Self::UP);
-        let proj = glam::DMat4::perspective_rh(
+        self.view = glam::DMat4::look_at_rh(self.position, self.position + self.forward, Self::UP);
+        self.proj = glam::DMat4::perspective_rh(
             self.fov,
             self.size.x as f64 / self.size.y.max(1) as f64,
             self.near,
             self.far,
         );
-        self.view_proj = proj * view;
+        self.view_proj = self.proj * self.view;
         self.inv_view_proj = self.view_proj.inverse();
     }
 }

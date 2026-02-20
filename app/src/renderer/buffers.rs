@@ -5,12 +5,12 @@ pub struct EnvironmentDataBuffer {
     pub shadow_bias: f32,
     pub camera: CameraDataBuffer,
     pub prev_camera: CameraDataBuffer,
-    pub jitter: glam::Vec2,
-    pub prev_jitter: glam::Vec2,
     pub shadow_spread: f32,
     pub filter_shadows: u32,
     pub shadow_filter_radius: f32,
-    pub _pad: f32,
+    pub max_ambient_distance: u32,
+    pub voxel_normal_factor: f32,
+    pub pad: [f32; 3],
 }
 
 #[repr(C)]
@@ -22,20 +22,20 @@ pub struct CameraDataBuffer {
     pub _pad_0: f32,
     pub forward: [f32; 3],
     pub near: f32,
+    pub jitter: [f32; 2],
     pub far: f32,
     pub fov: f32,
-    pub _pad_1: f32,
-    pub _pad_2: f32,
 }
 
 impl CameraDataBuffer {
-    pub fn from_camera(camera: &crate::engine::Camera) -> Self {
+    pub fn from_camera(camera: &crate::engine::Camera, jitter: glam::DVec2) -> Self {
         Self {
             view_proj: camera.view_proj.as_mat4().to_cols_array_2d(),
             inv_view_proj: camera.inv_view_proj.as_mat4().to_cols_array_2d(),
             ws_position: camera.position.as_vec3().to_array(),
             forward: camera.forward.as_vec3().to_array(),
             near: camera.near as f32,
+            jitter: jitter.as_vec2().to_array(),
             far: camera.far as f32,
             fov: camera.fov as f32,
             ..Default::default()
@@ -49,6 +49,7 @@ pub struct ModelDataBuffer {
     pub transform: [[f32; 4]; 4],
     pub inv_transform: [[f32; 4]; 4],
     pub normal_transform: [[f32; 4]; 3],
+    pub inv_normal_transform: [[f32; 4]; 3],
 }
 
 impl ModelDataBuffer {
@@ -56,6 +57,11 @@ impl ModelDataBuffer {
         self.transform = model.transform.as_mat4().to_cols_array_2d();
         self.inv_transform = model.inv_transform.as_mat4().to_cols_array_2d();
         self.normal_transform = glam::DMat3::from_mat4(model.inv_transform)
+            .transpose()
+            .as_mat3()
+            .to_cols_array_2d()
+            .map(|v| [v[0], v[1], v[2], 0.0]);
+        self.inv_normal_transform = glam::DMat3::from_mat4(model.transform)
             .transpose()
             .as_mat3()
             .to_cols_array_2d()

@@ -1,6 +1,6 @@
 @group(0) @binding(0) var out_color: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_albedo: texture_storage_2d<rgba16float, read>;
-@group(0) @binding(2) var tex_normal: texture_storage_2d<rgba16float, read>;
+@group(0) @binding(2) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(0) @binding(3) var tex_depth: texture_storage_2d<r32float, read>;
 @group(0) @binding(4) var tex_velocity: texture_storage_2d<rgba16float, read>;
 
@@ -11,24 +11,25 @@
 @group(2) @binding(2) var tex_noise: texture_2d<f32>;
 
 struct Environment {
-    sun_direction: vec3<f32>,
-    shadow_bias: f32,
-    camera: Camera,
-    prev_camera: Camera,
-    jitter: vec2<f32>,
-    prev_jitter: vec2<f32>,
-    shadow_spread: f32,
-    filter_shadows: u32,
-    shadow_filter_radius: f32,
+	sun_direction: vec3<f32>,
+	shadow_bias: f32,
+	camera: Camera,
+	prev_camera: Camera,
+	shadow_spread: f32,
+	filter_shadows: u32,
+	shadow_filter_radius: f32,
+	max_ambient_distance: u32,
+    smooth_normal_factor: f32,
 }
 struct Camera {
-    view_proj: mat4x4<f32>,
-    inv_view_proj: mat4x4<f32>,
-    ws_position: vec3<f32>,
-    forward: vec3<f32>,
-    near: f32,
-    far: f32,
-    fov: f32,
+	view_proj: mat4x4<f32>,
+	inv_view_proj: mat4x4<f32>,
+	ws_position: vec3<f32>,
+	forward: vec3<f32>,
+	near: f32,
+	jitter: vec2<f32>,
+	far: f32,
+	fov: f32,
 }
 struct FrameMetadata {
     frame_id: u32,
@@ -58,25 +59,30 @@ fn compute_main(in: ComputeIn) {
     let shadow = illumination.r;
     let radiance = illumination.g;
 
-    let normal = normalize(textureLoad(tex_normal, pos).rgb);
+    let normal_packed = textureLoad(tex_normal, pos).r;
+    let ws_normal = normalize(decode_normal_octahedral(normal_packed & 0x1fffffu));
+
     let depth = textureLoad(tex_depth, pos).r;
     let velocity = textureLoad(tex_velocity, pos).rg;
 
     let ws_light_dir = normalize(vec3(3.0, -1.0, 10.0));
 
-    let diff = max(dot(normal, ws_light_dir), 0.0);
+    let diff = max(dot(ws_normal, ws_light_dir), 0.0);
 
     var color = albedo * radiance * (diff * DIRECTIONAL_INTENSITY * shadow + AMBIENT_INTENSITY);
+    // var color = albedo * diff;
 
-    // color *= 0.5;
+    // color *= 0.00005;
     // color += vec3(abs(velocity) * 50.0, 0.0);
-    // color *= 0.00001;
-    // color += normal;
+    // color *= 0.00000001;
+    // color += ws_normal;
+
+    // color = vec3(velocity * 100.0 + 0.5, 0.0);
 
     // color *= 0.0001;
     // color += shadow_factor;
     // color *= 0.0001;
-    // color += radiance;
+    // color += illumination;
 
     // let noise = blue_noise(pos, dimensions);
     // color *= 0.0001;
@@ -114,11 +120,13 @@ const FILTER_KERNEL: array<vec2<f32>, 12> = array<vec2<f32>, 12>(
     vec2<f32>(-0.321940, -0.932615),
     vec2<f32>(-0.791559, -0.597705)
 );
+
 struct FilterResult {
     value: vec3<f32>,
     min: vec3<f32>,
     max: vec3<f32>,
 }
+
 fn filter_spatial(uv: vec2<f32>, texel_size: vec2<f32>, noise: vec3<f32>) -> FilterResult {
     var weight = 0.0;
     var cur = vec3(0.0);
@@ -154,4 +162,17 @@ fn blue_noise(pos: vec2<u32>) -> vec3<f32> {
     let noise_pos = vec2<u32>(pos.x & 0x7fu, pos.y & 0x7fu);
     let noise = textureLoad(tex_noise, vec2<i32>(noise_pos), 0).rgb;
     return noise;
+}
+
+/// decodes world space normal from lower 21 bits of u32
+// uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
+fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
+	let x = f32((packed >> 11u) & 0x3ffu) / 1023.0;
+	let y = f32((packed >> 1u) & 0x3ffu) / 1023.0;
+	let sgn = f32(packed & 1u) * 2.0 - 1.0;
+	var res = vec3<f32>(0.);
+	res.x = x - y;
+	res.y = x + y - 1.0;
+	res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
+	return normalize(res);
 }
