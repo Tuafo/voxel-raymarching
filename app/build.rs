@@ -92,7 +92,7 @@ fn generate_model_defs(sources: &[(VoxelMetadata, String)], out_dir: &Path) -> R
 
                     let file = std::fs::File::open(&self.path)?;
                     let reader = std::io::BufReader::new(file);
-                    let mut decoder = flate2::read::ZlibDecoder::new(reader);
+                    let mut decoder = flate2::bufread::ZlibDecoder::new(reader);
                     let mut buf = Vec::new();
                     decoder.read_to_end(&mut buf)?;
 

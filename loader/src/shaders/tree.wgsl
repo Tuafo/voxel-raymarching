@@ -37,7 +37,7 @@ fn compute_main(in: ComputeIn) {
 
     let raw = textureLoad(raw_voxels, vec3<i32>(in.voxel_pos)).rgb;
     let albedo_packed = raw.r;
-    let normal_packed = raw.g;
+    let normal_metallic_roughness = raw.g;
     let material_id = raw.b;
 
     let albedo_srgb = vec3<f32>(
@@ -63,7 +63,7 @@ fn compute_main(in: ComputeIn) {
         }
     }
 
-    let packed = (normal_packed << 11u) | palette_index;
+    let packed = normal_metallic_roughness | palette_index;
 
     brick.data[in.brick_index] = packed;
 

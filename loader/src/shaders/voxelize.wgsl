@@ -93,43 +93,52 @@ fn compute_main(in: ComputeIn) {
         for (var y = min_bd_i.y; y < max_bd_i.y; y++) {
             for (var z = min_bd_i.z; z < max_bd_i.z; z++) {
                 let center = vec3(f32(x), f32(y), f32(z)) + 0.5;
-                if test_voxel(center, v0, v1, v2) {
-                    // intersection passed
-                    let point = project_onto_plane(center, v0, v1, v2);
-                    let weights = tri_weights(point, v0, v1, v2);
 
-                    let uv_0 = vec2(uvs[i0 * 2u], uvs[i0 * 2u + 1u]);
-                    let uv_1 = vec2(uvs[i1 * 2u], uvs[i1 * 2u + 1u]);
-                    let uv_2 = vec2(uvs[i2 * 2u], uvs[i2 * 2u + 1u]);
-                    let uv = weights.x * uv_0 + weights.y * uv_1 + weights.z * uv_2;
-
-                    let material = materials[primitive.material_id];
-
-                    var albedo_packed = 0u;
-                    var normal_packed = 0u;
-                    if material.albedo_index >= 0 {
-                        let albedo = textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
-                        let rgba = vec4<u32>(albedo * 255.0 + 0.5);
-                        albedo_packed = ((rgba.r & 0xffu) << 24u) | ((rgba.g & 0xffu) << 16u) | ((rgba.b & 0xffu) << 8u) | 0xffu;
-
-                        var ws_normal = normalize(weights.x * normal_0 + weights.y * normal_1 + weights.z * normal_2);
-
-                        let ws_tangent = normalize((weights.x * tangent_0 + weights.y * tangent_1 + weights.z * tangent_2).xyz);
-                        let ws_bitangent = cross(ws_normal, ws_tangent) * tangent_0.w;
-                        let tbn = mat3x3<f32>(
-                            ws_tangent,
-                            ws_bitangent,
-                            ws_normal,
-                        );
-
-                        let tangent_normal = textureSampleLevel(textures[material.normal_index], tex_sampler, uv, 0.0).rgb * 2.0 - 1.0;
-                        ws_normal = normalize(tbn * tangent_normal);
-
-                        normal_packed = encode_normal_octahedral(ws_normal);
-                    }
-
-                    textureStore(out_voxels, vec3<i32>(vec3(x, y, z)), vec4<u32>(albedo_packed, normal_packed, primitive.material_id, 0u));
+                if !test_voxel(center, v0, v1, v2) {
+                    continue;
                 }
+                
+                let material = materials[primitive.material_id];
+                if material.albedo_index < 0 {
+                    continue;
+                }
+
+                let point = project_onto_plane(center, v0, v1, v2);
+                let weights = tri_weights(point, v0, v1, v2);
+
+                let uv_0 = vec2(uvs[i0 * 2u], uvs[i0 * 2u + 1u]);
+                let uv_1 = vec2(uvs[i1 * 2u], uvs[i1 * 2u + 1u]);
+                let uv_2 = vec2(uvs[i2 * 2u], uvs[i2 * 2u + 1u]);
+                let uv = weights.x * uv_0 + weights.y * uv_1 + weights.z * uv_2;
+
+                let albedo = textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
+                let rgba = vec4<u32>(albedo * 255.0 + 0.5);
+                let albedo_packed = ((rgba.r & 0xffu) << 24u) | ((rgba.g & 0xffu) << 16u) | ((rgba.b & 0xffu) << 8u) | 0xffu;
+
+                var ws_normal = normalize(weights.x * normal_0 + weights.y * normal_1 + weights.z * normal_2);
+
+                let ws_tangent = normalize((weights.x * tangent_0 + weights.y * tangent_1 + weights.z * tangent_2).xyz);
+                let ws_bitangent = cross(ws_normal, ws_tangent) * tangent_0.w;
+                let tbn = mat3x3<f32>(
+                    ws_tangent,
+                    ws_bitangent,
+                    ws_normal,
+                );
+
+                let tangent_normal = textureSampleLevel(textures[material.normal_index], tex_sampler, uv, 0.0).rgb * 2.0 - 1.0;
+                ws_normal = normalize(tbn * tangent_normal);
+                
+                var metallic = material.base_metallic;
+                var roughness = material.base_roughness;
+                if material.metallic_roughness_index >= 0 {
+                    let mr = textureSampleLevel(textures[material.metallic_roughness_index], tex_sampler, uv, 0.0);
+                    roughness *= mr.g;
+                    metallic *= mr.b;
+                }
+
+                let packed = pack_voxel(ws_normal, metallic, roughness);
+
+                textureStore(out_voxels, vec3<i32>(vec3(x, y, z)), vec4<u32>(albedo_packed, packed, primitive.material_id, 0u));
             }
         }
     }
@@ -226,6 +235,26 @@ fn rand_vec3(seed: u32) -> vec3<f32> {
     );
 }
 
+fn pack_voxel(normal: vec3<f32>, metallic: f32, roughness: f32) -> u32 {
+    let n = encode_normal_octahedral(normal);
+    let m = select(1u, 0u, metallic > 0.5);
+    let r = u32(roughness * 15.0 + 0.5);
+    return (n << 15u) | (m << 14u) | (r << 10u);
+}
+
+/// decodes world space normal from lower 17 bits of u32
+// uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
+fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
+	let x = f32((packed >> 9u) & 0xffu) / 255.0;
+	let y = f32((packed >> 1u) & 0xffu) / 255.0;
+	let sgn = f32(packed & 1u) * 2.0 - 1.0;
+	var res = vec3<f32>(0.);
+	res.x = x - y;
+	res.y = x + y - 1.0;
+	res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
+	return normalize(res);
+}
+
 /// encodes world space normal in lower 17 bits of u32
 // uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
 fn encode_normal_octahedral(normal: vec3<f32>) -> u32 {
@@ -235,6 +264,6 @@ fn encode_normal_octahedral(normal: vec3<f32>) -> u32 {
     nrm.x = n.x * 0.5 + nrm.y;
     nrm.y = n.x * -0.5 + nrm.y;
     let sgn = select(0u, 1u, n.z >= 0.0);
-    let res = (u32(nrm.x * 1023.0 + 0.5) << 11u) | (u32(nrm.y * 1023.0 + 0.5) << 1u) | sgn;
+    let res = (u32(nrm.x * 255.0 + 0.5) << 9u) | (u32(nrm.y * 255.0 + 0.5) << 1u) | sgn;
     return res;
 }

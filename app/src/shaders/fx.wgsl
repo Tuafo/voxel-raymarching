@@ -1,12 +1,41 @@
 @group(0) @binding(0) var tex_color: texture_2d<f32>;
 @group(0) @binding(1) var main_sampler: sampler;
 
+struct Environment {
+	sun_direction: vec3<f32>,
+	shadow_bias: f32,
+	camera: Camera,
+	prev_camera: Camera,
+	shadow_spread: f32,
+	filter_shadows: u32,
+	shadow_filter_radius: f32,
+	max_ambient_distance: u32,
+    smooth_normal_factor: f32,
+}
+struct Camera {
+	view_proj: mat4x4<f32>,
+	inv_view_proj: mat4x4<f32>,
+	ws_position: vec3<f32>,
+	forward: vec3<f32>,
+	near: f32,
+	jitter: vec2<f32>,
+	far: f32,
+	fov: f32,
+}
 struct FrameMetadata {
     frame_id: u32,
     taa_enabled: u32,
     fxaa_enabled: u32,
 }
-@group(1) @binding(0) var<uniform> frame: FrameMetadata;
+struct Model {
+    transform: mat4x4<f32>,
+    inv_transform: mat4x4<f32>,
+    normal_transform: mat3x3<f32>,
+    inv_normal_transform: mat3x3<f32>,
+}
+@group(1) @binding(0) var<uniform> environment: Environment;
+@group(1) @binding(1) var<uniform> frame: FrameMetadata;
+@group(1) @binding(2) var<uniform> model: Model;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -34,7 +63,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         color = fxaa(in.position, in.uv);
     }
+
+    color = tonemap(color);
+    color = pow(color, vec3(1.0 / 2.2));
     return vec4(color, 1.0);
+}
+
+fn tonemap(x: vec3<f32>) -> vec3<f32> {
+    const a = 2.51;
+    const b = 0.03;
+    const c = 2.43;
+    const d = 0.59;
+    const e = 0.14;
+    let out: vec3<f32> = (x * (a * x + b)) / (x * (c * x + d) + e);
+    return vec3<f32>(
+        clamp(out.r, 0.0, 1.0),
+        clamp(out.g, 0.0, 1.0),
+        clamp(out.b, 0.0, 1.0)
+    );
 }
 
 const EDGE_THRESHOLD_MIN: f32 = 0.0312;

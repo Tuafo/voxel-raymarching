@@ -3,7 +3,7 @@ use flate2::write::ZlibEncoder;
 use loader::{MODEL_FILE_EXT, voxelize};
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, Seek, Write},
     path::{Path, PathBuf},
 };
 
@@ -99,7 +99,6 @@ fn voxelize_models(sources: &[ModelSource], out_dir: &Path) -> Result<()> {
         let glb = fs::File::open(&src.path)?;
         let mut reader = io::BufReader::new(&glb);
         let data = voxelize(&mut reader, &device, &queue, Some(src.name.clone()))?;
-        dbg!(&data.meta);
         let data = data.serialize(&device, &queue)?;
 
         let path = out_dir.join(format!("{}.{}", &src.name, MODEL_FILE_EXT));

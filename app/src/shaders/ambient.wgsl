@@ -1,4 +1,4 @@
-@group(0) @binding(0) var tex_out_illum: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(0) var tex_out_illum: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(0) @binding(2) var tex_depth: texture_storage_2d<r32float, read>;
 
@@ -39,16 +39,16 @@ struct Camera {
 	far: f32,
 	fov: f32,
 }
+struct FrameMetadata {
+    frame_id: u32,
+    taa_enabled: u32,
+    fxaa_enabled: u32,
+}
 struct Model {
     transform: mat4x4<f32>,
     inv_transform: mat4x4<f32>,
     normal_transform: mat3x3<f32>,
     inv_normal_transform: mat3x3<f32>,
-}
-struct FrameMetadata {
-    frame_id: u32,
-    taa_enabled: u32,
-    fxaa_enabled: u32,
 }
 @group(2) @binding(0) var<uniform> environment: Environment;
 @group(2) @binding(1) var<uniform> frame: FrameMetadata;
@@ -70,7 +70,6 @@ fn compute_main(in: ComputeIn) {
 	let uv = (vec2<f32>(pos) + 0.5) * texel_size;
 	let uv_jittered  = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
 	
-
     let ray_length = textureLoad(tex_depth, pos).r;
     if ray_length < 0.0 {
         // primary ray missed
@@ -78,15 +77,15 @@ fn compute_main(in: ComputeIn) {
         return;
     }
 
-    let ray = primary_ray(uv_jittered);
+    let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
 
-    let normal_packed = textureLoad(tex_normal, pos).r;
-    let ws_normal = normalize(decode_normal_octahedral(normal_packed & 0x1fffffu));
-    let ls_normal = normalize(model.inv_normal_transform * ws_normal);
+    let packed = textureLoad(tex_normal, pos).r;
+    let voxel = unpack_voxel(packed);
 
-    let primary_hit_mask = decode_hit_mask((normal_packed >> 21u) & 0x7u);
-    let ls_hit_normal = normalize(-vec3<f32>(sign(ray.direction)) * vec3<f32>(primary_hit_mask));
-    let ws_hit_normal = normalize(model.normal_transform * ls_hit_normal);
+    let ls_normal = normalize(model.inv_normal_transform * voxel.ws_normal);
+
+    let ls_hit_normal = normalize(-vec3<f32>(sign(ray.direction)) * vec3<f32>(voxel.hit_mask));
+    // let ws_hit_normal = normalize(model.normal_transform * ls_hit_normal);
 
     let ls_pos = ray.ls_origin + ray.direction * ray_length;
 
@@ -341,14 +340,6 @@ fn primary_ray(uv: vec2<f32>) -> Ray {
     return ray;
 }
 
-fn safe_inverse(v: vec3<f32>) -> vec3<f32> {
-    return vec3(
-        select(1.0 / v.x, 1e10, v.x == 0.0),
-        select(1.0 / v.y, 1e10, v.y == 0.0),
-        select(1.0 / v.z, 1e10, v.z == 0.0),
-    );
-}
-
 // not using now, reconstruct ws pos from depth like this
 // let depth = dot(ws_pos - environment.camera.ws_position, environment.camera.forward);
 // fn reconstruct_ws_pos(depth: f32, uv: vec2<f32>) -> vec3<f32> {
@@ -364,6 +355,31 @@ fn safe_inverse(v: vec3<f32>) -> vec3<f32> {
 //     return environment.camera.ws_position + (dir * t_total);
 // }
 
+
+struct Voxel {
+    ws_normal: vec3<f32>,
+    metallic: f32,
+    roughness: f32,
+    hit_mask: vec3<bool>,
+}
+fn unpack_voxel(packed: u32) -> Voxel {
+    var res: Voxel;
+    res.ws_normal = decode_normal_octahedral(packed >> 11u);
+    res.metallic = f32((packed >> 10u) & 1u);
+    res.roughness = f32((packed >> 6u) & 15u) / 16.0;
+    res.hit_mask = decode_hit_mask((packed >> 3u) & 7u);
+    return res;
+}
+
+fn decode_hit_mask(packed: u32) -> vec3<bool> {
+    let mask = vec3<u32>(
+        (packed >> 2u) & 1u,
+        (packed >> 1u) & 1u,
+        packed & 1u,
+    );
+    return vec3<bool>(mask);
+}
+
 /// decodes world space normal from lower 21 bits of u32
 // uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
 fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
@@ -375,13 +391,4 @@ fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
 	res.y = x + y - 1.0;
 	res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
 	return normalize(res);
-}
-
-fn decode_hit_mask(packed: u32) -> vec3<bool> {
-    let mask = vec3<u32>(
-        (packed >> 2u) & 1u,
-        (packed >> 1u) & 1u,
-        packed & 1u,
-    );
-    return vec3<bool>(mask);
 }

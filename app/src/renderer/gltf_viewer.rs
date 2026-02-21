@@ -392,8 +392,8 @@ impl ModelViewer {
                     .iter()
                     .map(|mat| MaterialData {
                         base_albedo: mat.base_albedo.to_array(),
-                        metallic: mat.metallic,
-                        roughness: mat.roughness,
+                        metallic: mat.base_metallic,
+                        roughness: mat.base_roughness,
                         normal_scale: mat.normal_scale,
                         albedo_index: mat.albedo_index,
                         normal_index: mat.normal_index,

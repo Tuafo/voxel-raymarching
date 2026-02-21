@@ -1,6 +1,6 @@
 use std::{
     io::{BufRead, Read, Seek},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::gltf::{self, Gltf, Scene};
@@ -189,6 +189,7 @@ impl VoxelModel {
         let header_length = bytemuck::cast_slice::<u8, u32>(&data[0..4])[0] as usize;
 
         let header: VoxelFileHeader = serde_json::from_slice(&data[4..(4 + header_length)])?;
+
         let buf = &data[4 + header_length..];
 
         let buffer_chunk_indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -223,21 +224,36 @@ impl VoxelModel {
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        queue.write_texture(
+
+        let staging_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("staging_buffer"),
+            contents: &buf[header.file.tex_brickmap.start..header.file.tex_brickmap.end],
+            usage: wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("brickmap_upload_encoder"),
+        });
+
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(header.file.tex_brickmap_bytes_per_row_padded),
+                    rows_per_image: Some(header.file.tex_brickmap_size.y),
+                },
+            },
             wgpu::TexelCopyTextureInfo {
                 texture: &tex_brickmap,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &buf[header.file.tex_brickmap.start..header.file.tex_brickmap.end],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(header.file.tex_brickmap_bytes_per_row_padded),
-                rows_per_image: Some(header.file.tex_brickmap_size.y),
-            },
             tex_brickmap_size,
         );
+
+        queue.submit([encoder.finish()]);
 
         Ok(Self {
             meta: header.meta,

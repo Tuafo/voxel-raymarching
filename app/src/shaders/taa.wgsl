@@ -24,8 +24,15 @@ struct FrameMetadata {
     taa_enabled: u32,
     fxaa_enabled: u32,
 }
+struct Model {
+    transform: mat4x4<f32>,
+    inv_transform: mat4x4<f32>,
+    normal_transform: mat3x3<f32>,
+    inv_normal_transform: mat3x3<f32>,
+}
 @group(0) @binding(0) var<uniform> environment: Environment;
 @group(0) @binding(1) var<uniform> frame: FrameMetadata;
+@group(0) @binding(2) var<uniform> model: Model;
 
 @group(1) @binding(0) var main_sampler: sampler;
 @group(1) @binding(1) var tex_velocity: texture_storage_2d<rgba16float, read>;
