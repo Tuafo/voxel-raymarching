@@ -730,13 +730,14 @@ impl Voxelizer {
             #[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
             struct MaterialBufferEntry {
                 base_albedo: glam::Vec4,
-                metallic: f32,
-                roughness: f32,
+                base_metallic: f32,
+                base_roughness: f32,
                 normal_scale: f32,
                 albedo_index: i32,
                 normal_index: i32,
+                metallic_roughness_index: i32,
                 double_sided: u32,
-                _pad: [f32; 2],
+                _pad: f32,
             }
             // binding 1
             let buffer_materials = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -747,13 +748,14 @@ impl Voxelizer {
                         .iter()
                         .map(|mat| MaterialBufferEntry {
                             base_albedo: mat.base_albedo,
-                            metallic: mat.metallic,
-                            roughness: mat.roughness,
+                            base_metallic: mat.base_metallic,
+                            base_roughness: mat.base_roughness,
                             normal_scale: mat.normal_scale,
                             albedo_index: mat.albedo_index,
                             normal_index: mat.normal_index,
+                            metallic_roughness_index: mat.metallic_roughness_index,
                             double_sided: mat.double_sided as u32,
-                            _pad: [0.0; 2],
+                            _pad: 0.0,
                         })
                         .collect::<Vec<MaterialBufferEntry>>(),
                 ),

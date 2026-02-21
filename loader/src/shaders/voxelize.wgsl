@@ -5,11 +5,12 @@ struct Scene {
 }
 struct Material {
     base_albedo: vec4<f32>,
-    metallic: f32,
-    roughness: f32,
+    base_metallic: f32,
+    base_roughness: f32,
     normal_scale: f32,
     albedo_index: i32,
     normal_index: i32,
+    metallic_roughness_index: i32,
     double_sided: u32,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;
@@ -225,7 +226,7 @@ fn rand_vec3(seed: u32) -> vec3<f32> {
     );
 }
 
-/// encodes world space normal in lower 21 bits of u32
+/// encodes world space normal in lower 17 bits of u32
 // uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
 fn encode_normal_octahedral(normal: vec3<f32>) -> u32 {
     var n = normal / (abs(normal.x) + abs(normal.y) + abs(normal.z));

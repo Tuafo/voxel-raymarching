@@ -17,11 +17,12 @@ pub struct Scene {
 #[derive(Debug)]
 pub struct Material {
     pub base_albedo: glam::Vec4,
-    pub metallic: f32,
-    pub roughness: f32,
+    pub base_metallic: f32,
+    pub base_roughness: f32,
     pub normal_scale: f32,
     pub albedo_index: i32,
     pub normal_index: i32,
+    pub metallic_roughness_index: i32,
     pub double_sided: bool,
 }
 
@@ -246,8 +247,16 @@ impl Material {
             .and_then(|tex| tex.source)
             .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
             .unwrap_or(-1);
+        let metallic_roughness_index = m
+            .pbr_metallic_roughness
+            .as_ref()
+            .and_then(|pbr| (&pbr.metallic_roughness_texture).as_ref())
+            .and_then(|info| gltf.meta.textures.get(info.index as usize))
+            .and_then(|tex| tex.source)
+            .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
+            .unwrap_or(-1);
 
-        let (base_albedo, roughness, metallic) = (&m.pbr_metallic_roughness)
+        let (base_albedo, base_roughness, base_metallic) = (&m.pbr_metallic_roughness)
             .as_ref()
             .map(|pbr| {
                 (
@@ -263,11 +272,12 @@ impl Material {
 
         Self {
             base_albedo,
-            roughness,
-            metallic,
+            base_roughness,
+            base_metallic,
             normal_scale,
             albedo_index,
             normal_index,
+            metallic_roughness_index,
             double_sided,
         }
     }
