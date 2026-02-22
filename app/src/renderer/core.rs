@@ -1,4 +1,4 @@
-use std::{f32, io::Read, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use wgpu::util::DeviceExt;
 
@@ -11,6 +11,10 @@ use crate::{
         noise,
         quad::Quad,
         timing::{RenderTimer, TimedEncoder},
+        utils::{
+            DeviceSwapExt, PassSwapExt, SwapchainBindGroup, SwapchainBindGroupDescriptor,
+            SwapchainBindGroupEntry, SwapchainBindingResource, SwapchainTexture,
+        },
     },
     ui::{Ui, UiCtx},
 };
@@ -62,8 +66,10 @@ struct Pipelines {
 struct BindGroupLayouts {
     per_frame_shared: wgpu::BindGroupLayout,
     raymarch_gbuffer: wgpu::BindGroupLayout,
+    raymarch_swap: wgpu::BindGroupLayout,
     raymarch_static: wgpu::BindGroupLayout,
     ambient_gbuffer: wgpu::BindGroupLayout,
+    ambient_swap: wgpu::BindGroupLayout,
     ambient_static: wgpu::BindGroupLayout,
     lighting_resolve_gbuffer: wgpu::BindGroupLayout,
     lighting_resolve_swap: wgpu::BindGroupLayout,
@@ -78,36 +84,30 @@ struct BindGroupLayouts {
 struct BindGroups {
     per_frame_shared: wgpu::BindGroup,
     raymarch_gbuffer: Option<wgpu::BindGroup>,
+    raymarch_swap: Option<SwapchainBindGroup>,
     raymarch_static: wgpu::BindGroup,
     ambient_gbuffer: Option<wgpu::BindGroup>,
+    ambient_swap: Option<SwapchainBindGroup>,
     ambient_static: wgpu::BindGroup,
     lighting_resolve_gbuffer: Option<wgpu::BindGroup>,
-    lighting_resolve_swap_a: Option<wgpu::BindGroup>,
-    lighting_resolve_swap_b: Option<wgpu::BindGroup>,
+    lighting_resolve_swap: Option<SwapchainBindGroup>,
     deferred_gbuffer: Option<wgpu::BindGroup>,
-    deferred_swap_a: Option<wgpu::BindGroup>,
-    deferred_swap_b: Option<wgpu::BindGroup>,
+    deferred_swap: Option<SwapchainBindGroup>,
     deferred_static: wgpu::BindGroup,
     taa_input: Option<wgpu::BindGroup>,
-    taa_output_a: Option<wgpu::BindGroup>,
-    taa_output_b: Option<wgpu::BindGroup>,
-    fx_input_a: Option<wgpu::BindGroup>,
-    fx_input_b: Option<wgpu::BindGroup>,
+    taa_swap: Option<SwapchainBindGroup>,
+    fx_input_swap: Option<SwapchainBindGroup>,
 }
 
 struct Textures {
     gbuffer_albedo: Option<wgpu::Texture>,
-    gbuffer_normal: Option<wgpu::Texture>,
-    gbuffer_depth: Option<wgpu::Texture>,
+    gbuffer_normal: Option<SwapchainTexture>,
+    gbuffer_depth: Option<SwapchainTexture>,
     gbuffer_velocity: Option<wgpu::Texture>,
     gbuffer_illumination: Option<wgpu::Texture>,
-    gbuffer_acc_length_a: Option<wgpu::Texture>,
-    gbuffer_acc_length_b: Option<wgpu::Texture>,
-    gbuffer_acc_illumination_a: Option<wgpu::Texture>,
-    gbuffer_acc_illumination_b: Option<wgpu::Texture>,
+    gbuffer_acc_illumination: Option<SwapchainTexture>,
     deferred_output: Option<wgpu::Texture>,
-    out_color_a: Option<wgpu::Texture>,
-    out_color_b: Option<wgpu::Texture>,
+    out_color: Option<SwapchainTexture>,
     voxel_brickmap: wgpu::Texture,
     noise_cos_hemisphere_gauss: wgpu::Texture,
     noise_uniform_gauss: wgpu::Texture,
@@ -191,27 +191,32 @@ impl Renderer {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            }),
+            raymarch_swap: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("raymarch_swap"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
                             format: wgpu::TextureFormat::R32Uint,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
-                        binding: 2,
+                        binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::WriteOnly,
                             format: wgpu::TextureFormat::R32Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -291,19 +296,22 @@ impl Renderer {
             }),
             ambient_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("ambient_gbuffer"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                }],
+            }),
+            ambient_swap: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("ambient_swap"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::ReadOnly,
@@ -313,7 +321,7 @@ impl Renderer {
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
-                        binding: 2,
+                        binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::ReadOnly,
@@ -415,26 +423,6 @@ impl Renderer {
                             },
                             count: None,
                         },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::R32Float,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 4,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::R32Uint,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
                     ],
                 },
             ),
@@ -476,8 +464,8 @@ impl Renderer {
                             binding: 3,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::WriteOnly,
-                                format: wgpu::TextureFormat::R32Uint,
+                                access: wgpu::StorageTextureAccess::ReadOnly,
+                                format: wgpu::TextureFormat::R32Float,
                                 view_dimension: wgpu::TextureViewDimension::D2,
                             },
                             count: None,
@@ -513,26 +501,6 @@ impl Renderer {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::R32Uint,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::R32Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
                             format: wgpu::TextureFormat::Rgba16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
@@ -542,16 +510,38 @@ impl Renderer {
             }),
             deferred_swap: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("deferred_swap"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::R32Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::R32Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
             }),
             deferred_static: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("deferred_static"),
@@ -609,16 +599,6 @@ impl Renderer {
                         },
                         count: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
                 ],
             }),
             taa_output: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -641,6 +621,16 @@ impl Renderer {
                             access: wgpu::StorageTextureAccess::WriteOnly,
                             format: wgpu::TextureFormat::Rgba16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
                         },
                         count: None,
                     },
@@ -674,6 +664,7 @@ impl Renderer {
                 label: Some("raymarch"),
                 bind_group_layouts: &[
                     &bg_layouts.raymarch_gbuffer,
+                    &bg_layouts.raymarch_swap,
                     &bg_layouts.raymarch_static,
                     &bg_layouts.per_frame_shared,
                 ],
@@ -683,6 +674,7 @@ impl Renderer {
                 label: Some("ambient"),
                 bind_group_layouts: &[
                     &bg_layouts.ambient_gbuffer,
+                    &bg_layouts.ambient_swap,
                     &bg_layouts.ambient_static,
                     &bg_layouts.per_frame_shared,
                 ],
@@ -847,13 +839,9 @@ impl Renderer {
             gbuffer_depth: None,
             gbuffer_velocity: None,
             gbuffer_illumination: None,
-            gbuffer_acc_length_a: None,
-            gbuffer_acc_length_b: None,
-            gbuffer_acc_illumination_a: None,
-            gbuffer_acc_illumination_b: None,
+            gbuffer_acc_illumination: None,
             deferred_output: None,
-            out_color_a: None,
-            out_color_b: None,
+            out_color: None,
             voxel_brickmap: scene.data.tex_brickmap,
             noise_cos_hemisphere_gauss: noise::noise_cos_hemisphere_gauss(device, queue).unwrap(),
             noise_uniform_gauss: noise::noise_uniform_gauss(device, queue).unwrap(),
@@ -997,7 +985,9 @@ impl Renderer {
                     },
                 ],
             }),
+            raymarch_swap: None,
             ambient_gbuffer: None,
+            ambient_swap: None,
             ambient_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("ambient_static"),
                 layout: &bg_layouts.ambient_static,
@@ -1041,11 +1031,9 @@ impl Renderer {
                 ],
             }),
             lighting_resolve_gbuffer: None,
-            lighting_resolve_swap_a: None,
-            lighting_resolve_swap_b: None,
+            lighting_resolve_swap: None,
             deferred_gbuffer: None,
-            deferred_swap_a: None,
-            deferred_swap_b: None,
+            deferred_swap: None,
             deferred_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("deferred_static"),
                 layout: &bg_layouts.deferred_static,
@@ -1071,10 +1059,8 @@ impl Renderer {
                 ],
             }),
             taa_input: None,
-            taa_output_a: None,
-            taa_output_b: None,
-            fx_input_a: None,
-            fx_input_b: None,
+            taa_swap: None,
+            fx_input_swap: None,
         };
 
         let timing = device
@@ -1141,7 +1127,7 @@ impl Renderer {
             },
         );
 
-        self.textures.gbuffer_normal = Some(device.create_texture(&wgpu::TextureDescriptor {
+        self.textures.gbuffer_normal = Some(device.create_texture_swap(&wgpu::TextureDescriptor {
             label: Some("gbuffer_normal"),
             size,
             sample_count: 1,
@@ -1158,7 +1144,7 @@ impl Renderer {
             },
         );
 
-        self.textures.gbuffer_depth = Some(device.create_texture(&wgpu::TextureDescriptor {
+        self.textures.gbuffer_depth = Some(device.create_texture_swap(&wgpu::TextureDescriptor {
             label: Some("gbuffer_depth"),
             size,
             sample_count: 1,
@@ -1216,51 +1202,9 @@ impl Renderer {
                 ..Default::default()
             });
 
-        self.textures.gbuffer_acc_length_a =
-            Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_acc_length_a"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::R32Uint,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_acc_length_a = self
-            .textures
-            .gbuffer_acc_length_a
-            .as_ref()
-            .unwrap()
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_acc_length_a"),
-                ..Default::default()
-            });
-
-        self.textures.gbuffer_acc_length_b =
-            Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_acc_length_b"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::R32Uint,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_acc_length_b = self
-            .textures
-            .gbuffer_acc_length_b
-            .as_ref()
-            .unwrap()
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_acc_length_b"),
-                ..Default::default()
-            });
-
-        self.textures.gbuffer_acc_illumination_a =
-            Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_acc_illumination_a"),
+        self.textures.gbuffer_acc_illumination =
+            Some(device.create_texture_swap(&wgpu::TextureDescriptor {
+                label: Some("gbuffer_acc_illumination"),
                 size,
                 sample_count: 1,
                 format: wgpu::TextureFormat::Rgba16Float,
@@ -1269,34 +1213,13 @@ impl Renderer {
                 mip_level_count: 1,
                 view_formats: &[],
             }));
-        let view_gbuffer_acc_illumination_a = self
+        let view_gbuffer_acc_illumination = self
             .textures
-            .gbuffer_acc_illumination_a
+            .gbuffer_acc_illumination
             .as_ref()
             .unwrap()
             .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_acc_illumination_a"),
-                ..Default::default()
-            });
-
-        self.textures.gbuffer_acc_illumination_b =
-            Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("gbuffer_acc_illumination_b"),
-                size,
-                sample_count: 1,
-                format: wgpu::TextureFormat::Rgba16Float,
-                dimension: wgpu::TextureDimension::D2,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                mip_level_count: 1,
-                view_formats: &[],
-            }));
-        let view_gbuffer_acc_illumination_b = self
-            .textures
-            .gbuffer_acc_illumination_b
-            .as_ref()
-            .unwrap()
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("gbuffer_acc_illumination_b"),
+                label: Some("gbuffer_acc_illumination"),
                 ..Default::default()
             });
 
@@ -1317,7 +1240,7 @@ impl Renderer {
             },
         );
 
-        self.textures.out_color_a = Some(device.create_texture(&wgpu::TextureDescriptor {
+        self.textures.out_color = Some(device.create_texture_swap(&wgpu::TextureDescriptor {
             label: Some("out_color_a"),
             size,
             sample_count: 1,
@@ -1327,55 +1250,13 @@ impl Renderer {
             mip_level_count: 1,
             view_formats: &[],
         }));
-        let view_out_color_read_a =
+        let view_out_color =
             self.textures
-                .out_color_a
+                .out_color
                 .as_ref()
                 .unwrap()
                 .create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("out_color_read_a"),
-                    usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-                    ..Default::default()
-                });
-        let view_out_color_write_a =
-            self.textures
-                .out_color_a
-                .as_ref()
-                .unwrap()
-                .create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("out_color_write_a"),
-                    usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
-                    ..Default::default()
-                });
-
-        self.textures.out_color_b = Some(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("out_color_b"),
-            size,
-            sample_count: 1,
-            format: wgpu::TextureFormat::Rgba16Float,
-            dimension: wgpu::TextureDimension::D2,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            mip_level_count: 1,
-            view_formats: &[],
-        }));
-        let view_out_color_read_b =
-            self.textures
-                .out_color_b
-                .as_ref()
-                .unwrap()
-                .create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("out_color_read_b"),
-                    usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-                    ..Default::default()
-                });
-        let view_out_color_write_b =
-            self.textures
-                .out_color_b
-                .as_ref()
-                .unwrap()
-                .create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("out_color_write_b"),
-                    usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+                    label: Some("out_color"),
                     ..Default::default()
                 });
 
@@ -1390,38 +1271,54 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_normal),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_depth),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
                         resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
                     },
                 ],
             }));
 
+        self.bind_groups.raymarch_swap = Some(device.create_bind_group_swap(
+            &SwapchainBindGroupDescriptor {
+                label: Some("raymarch_swap"),
+                layout: &self.bg_layouts.raymarch_swap,
+                entries: &[
+                    SwapchainBindGroupEntry {
+                        binding: 0,
+                        resource: view_gbuffer_normal.both(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 1,
+                        resource: view_gbuffer_depth.both(),
+                    },
+                ],
+            },
+        ));
+
         self.bind_groups.ambient_gbuffer =
             Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("ambient_gbuffer"),
                 layout: &self.bg_layouts.ambient_gbuffer,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_illumination),
+                }],
+            }));
+
+        self.bind_groups.ambient_swap = Some(device.create_bind_group_swap(
+            &SwapchainBindGroupDescriptor {
+                label: Some("ambient_swap"),
+                layout: &self.bg_layouts.ambient_swap,
                 entries: &[
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_illumination),
+                        resource: view_gbuffer_normal.both_reversed(),
                     },
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_normal),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_depth),
+                        resource: view_gbuffer_depth.both_reversed(),
                     },
                 ],
-            }));
+            },
+        ));
 
         self.bind_groups.lighting_resolve_gbuffer =
             Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1440,72 +1337,33 @@ impl Renderer {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(&view_gbuffer_illumination),
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_depth),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_normal),
-                    },
                 ],
             }));
 
-        self.bind_groups.lighting_resolve_swap_a =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lighting_resolve_swap_a"),
+        self.bind_groups.lighting_resolve_swap = Some(device.create_bind_group_swap(
+            &SwapchainBindGroupDescriptor {
+                label: Some("lighting_resolve_swap"),
                 layout: &self.bg_layouts.lighting_resolve_swap,
                 entries: &[
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_acc_illumination_a,
-                        ),
+                        resource: view_gbuffer_acc_illumination.both(),
                     },
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_acc_illumination_b,
-                        ),
+                        resource: view_gbuffer_acc_illumination.both_reversed(),
                     },
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_acc_length_a),
+                        resource: view_gbuffer_normal.both_reversed(),
                     },
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_acc_length_b),
+                        resource: view_gbuffer_depth.both_reversed(),
                     },
                 ],
-            }));
-
-        self.bind_groups.lighting_resolve_swap_b =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lighting_resolve_swap_b"),
-                layout: &self.bg_layouts.lighting_resolve_swap,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_acc_illumination_b,
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &view_gbuffer_acc_illumination_a,
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_acc_length_b),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_acc_length_a),
-                    },
-                ],
-            }));
+            },
+        ));
 
         self.bind_groups.deferred_gbuffer =
             Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1522,38 +1380,31 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_normal),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_depth),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
                         resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
                     },
                 ],
             }));
 
-        self.bind_groups.deferred_swap_a =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("deferred_input_a"),
+        self.bind_groups.deferred_swap = Some(device.create_bind_group_swap(
+            &SwapchainBindGroupDescriptor {
+                label: Some("deferred_swap"),
                 layout: &self.bg_layouts.deferred_swap,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_acc_illumination_b),
-                }],
-            }));
-
-        self.bind_groups.deferred_swap_b =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("deferred_swap_b"),
-                layout: &self.bg_layouts.deferred_swap,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_acc_illumination_a),
-                }],
-            }));
+                entries: &[
+                    SwapchainBindGroupEntry {
+                        binding: 0,
+                        resource: view_gbuffer_normal.both_reversed(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 1,
+                        resource: view_gbuffer_depth.both_reversed(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 2,
+                        resource: view_gbuffer_acc_illumination.both_reversed(),
+                    },
+                ],
+            },
+        ));
 
         self.bind_groups.taa_input = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("taa_input"),
@@ -1569,76 +1420,50 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_depth),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
                     resource: wgpu::BindingResource::TextureView(&view_deferred_output),
                 },
             ],
         }));
 
-        self.bind_groups.taa_output_a =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("taa_output_a"),
+        self.bind_groups.taa_swap = Some(device.create_bind_group_swap(
+            &SwapchainBindGroupDescriptor {
+                label: Some("taa_output_swap"),
                 layout: &self.bg_layouts.taa_output,
                 entries: &[
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view_out_color_read_b),
+                        resource: view_out_color.both(),
                     },
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view_out_color_write_a),
+                        resource: view_out_color.both_reversed(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 2,
+                        resource: view_gbuffer_depth.both_reversed(),
                     },
                 ],
-            }));
+            },
+        ));
 
-        self.bind_groups.taa_output_b =
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("taa_output_a"),
-                layout: &self.bg_layouts.taa_output,
+        self.bind_groups.fx_input_swap = Some(device.create_bind_group_swap(
+            &SwapchainBindGroupDescriptor {
+                label: Some("fx_input_swap"),
+                layout: &self.bg_layouts.fx_input,
                 entries: &[
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view_out_color_read_a),
+                        resource: view_out_color.both_reversed(),
                     },
-                    wgpu::BindGroupEntry {
+                    SwapchainBindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view_out_color_write_b),
+                        resource: SwapchainBindingResource::Single(wgpu::BindingResource::Sampler(
+                            &self.samplers.linear,
+                        )),
                     },
                 ],
-            }));
-
-        self.bind_groups.fx_input_a = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fx_input_a"),
-            layout: &self.bg_layouts.fx_input,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_out_color_read_a),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.samplers.linear),
-                },
-            ],
-        }));
-
-        self.bind_groups.fx_input_b = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fx_input_b"),
-            layout: &self.bg_layouts.fx_input,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view_out_color_read_b),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.samplers.linear),
-                },
-            ],
-        }));
+            },
+        ));
     }
 
     pub fn frame<'a>(&mut self, delta_time: &Duration, ctx: &'a mut RendererCtx) {
@@ -1715,8 +1540,9 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipelines.raymarch);
             pass.set_bind_group(0, &self.bind_groups.raymarch_gbuffer, &[]);
-            pass.set_bind_group(1, &self.bind_groups.raymarch_static, &[]);
-            pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+            pass.set_bind_group_swap(1, &self.bind_groups.raymarch_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.raymarch_static, &[]);
+            pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("raymarch");
             pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
@@ -1728,8 +1554,9 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipelines.ambient);
             pass.set_bind_group(0, &self.bind_groups.ambient_gbuffer, &[]);
-            pass.set_bind_group(1, &self.bind_groups.ambient_static, &[]);
-            pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+            pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.ambient_static, &[]);
+            pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("ambient");
             pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
@@ -1741,13 +1568,11 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipelines.lighting_resolve);
             pass.set_bind_group(0, &self.bind_groups.lighting_resolve_gbuffer, &[]);
-            pass.set_bind_group(
+            pass.set_bind_group_swap(
                 1,
-                match self.frame_id & 1 {
-                    0 => &self.bind_groups.lighting_resolve_swap_a,
-                    _ => &self.bind_groups.lighting_resolve_swap_b,
-                },
+                &self.bind_groups.lighting_resolve_swap,
                 &[],
+                self.frame_id,
             );
             pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
 
@@ -1761,14 +1586,7 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipelines.deferred);
             pass.set_bind_group(0, &self.bind_groups.deferred_gbuffer, &[]);
-            pass.set_bind_group(
-                1,
-                match self.frame_id & 1 {
-                    0 => &self.bind_groups.deferred_swap_a,
-                    _ => &self.bind_groups.deferred_swap_b,
-                },
-                &[],
-            );
+            pass.set_bind_group_swap(1, &self.bind_groups.deferred_swap, &[], self.frame_id);
             pass.set_bind_group(2, &self.bind_groups.deferred_static, &[]);
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
@@ -1783,14 +1601,7 @@ impl Renderer {
             pass.set_pipeline(&self.pipelines.taa);
             pass.set_bind_group(0, &self.bind_groups.per_frame_shared, &[]);
             pass.set_bind_group(1, &self.bind_groups.taa_input, &[]);
-            pass.set_bind_group(
-                2,
-                match self.frame_id & 1 {
-                    0 => &self.bind_groups.taa_output_a,
-                    _ => &self.bind_groups.taa_output_b,
-                },
-                &[],
-            );
+            pass.set_bind_group_swap(2, &self.bind_groups.taa_swap, &[], self.frame_id);
 
             pass.insert_debug_marker("taa");
             pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
@@ -1814,14 +1625,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&descriptor);
 
             pass.set_pipeline(&self.pipelines.fx);
-            pass.set_bind_group(
-                0,
-                match self.frame_id & 1 {
-                    0 => &self.bind_groups.fx_input_a,
-                    _ => &self.bind_groups.fx_input_b,
-                },
-                &[],
-            );
+            pass.set_bind_group_swap(0, &self.bind_groups.fx_input_swap, &[], self.frame_id);
             pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
             pass.set_index_buffer(self.quad.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             pass.set_vertex_buffer(0, self.quad.vertex_buffer.slice(..));

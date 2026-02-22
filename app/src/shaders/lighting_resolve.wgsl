@@ -1,13 +1,11 @@
 @group(0) @binding(0) var main_sampler: sampler;
 @group(0) @binding(1) var tex_velocity: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_cur_illum: texture_storage_2d<rgba16float, read>;
-@group(0) @binding(3) var tex_depth: texture_storage_2d<r32float, read>;
-@group(0) @binding(4) var tex_normal: texture_storage_2d<r32uint, read>;
 
 @group(1) @binding(0) var tex_acc_illum: texture_storage_2d<rgba16float, read>;
 @group(1) @binding(1) var tex_out_illum: texture_storage_2d<rgba16float, write>;
-@group(1) @binding(2) var tex_in_acc_len: texture_storage_2d<r32uint, read>;
-@group(1) @binding(3) var tex_out_acc_len: texture_storage_2d<r32uint, write>;
+@group(1) @binding(2) var tex_normal: texture_storage_2d<r32uint, read>;
+@group(1) @binding(3) var tex_depth: texture_storage_2d<r32float, read>;
 
 struct Environment {
 	sun_direction: vec3<f32>,
@@ -75,17 +73,15 @@ fn resolve_illum(in: ComputeIn) {
         
         // let acc = sample_catmull_rom_5(acc_uv, vec2<f32>(dimensions));
         let acc = textureLoad(tex_acc_illum, acc_pos).rgb;
-        history_length += textureLoad(tex_in_acc_len, acc_pos).r;
         
-        let alpha = 1.0 / min(f32(history_length), 20.0);
+        let alpha = 0.01;
 
         res = mix(acc, cur, alpha);
         res.g = 0.0;
     } else {
         res.g = 1.0;
     }
-
-    textureStore(tex_out_acc_len, pos, vec4<u32>(history_length, 0, 0, 0));
+ 
     textureStore(tex_out_illum, pos, vec4<f32>(res, 1.));
 }
 

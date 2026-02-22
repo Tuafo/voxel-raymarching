@@ -5,4 +5,5 @@ mod noise;
 mod palette;
 mod quad;
 mod timing;
+mod utils;
 pub use self::core::{Renderer, RendererCtx};

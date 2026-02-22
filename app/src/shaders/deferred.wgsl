@@ -1,10 +1,10 @@
 @group(0) @binding(0) var out_color: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_albedo: texture_storage_2d<rgba16float, read>;
-@group(0) @binding(2) var tex_normal: texture_storage_2d<r32uint, read>;
-@group(0) @binding(3) var tex_depth: texture_storage_2d<r32float, read>;
-@group(0) @binding(4) var tex_velocity: texture_storage_2d<rgba16float, read>;
+@group(0) @binding(2) var tex_velocity: texture_storage_2d<rgba16float, read>;
 
-@group(1) @binding(0) var tex_illumination: texture_2d<f32>;
+@group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
+@group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
+@group(1) @binding(2) var tex_illumination: texture_2d<f32>;
 
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var sampler_noise: sampler;
@@ -60,7 +60,7 @@ fn compute_main(in: ComputeIn) {
 	let uv_jittered  = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
 
     let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
-    
+
     let packed = textureLoad(tex_normal, pos).r;
     let voxel = unpack_voxel(packed);
 
@@ -68,8 +68,8 @@ fn compute_main(in: ComputeIn) {
 
     let albedo_sample = textureLoad(tex_albedo, pos);
     let albedo = albedo_sample.rgb;
-    let illumination = gather_illumination(pos, noise);
-    // let illumination = textureLoad(tex_illumination, pos, 0);
+    // let illumination = gather_illumination(pos, noise);
+    let illumination = textureLoad(tex_illumination, pos, 0);
     let shadow = illumination.r;
     let radiance = illumination.g;
 
@@ -115,25 +115,25 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     let V = normalize(environment.camera.ws_position - in.ws_pos);
     let L = normalize(environment.sun_direction);
     let H = normalize(V + L);
-    
-    const AMBIENT: vec3<f32> = vec3<f32>(1.0) * 0.00;
-    const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 1.5;
+
+    const AMBIENT: vec3<f32> = vec3<f32>(1.0) * 0.3;
+    const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 0.8;
 
     var direct: vec3<f32>;
     {
         let diffuse = in.albedo / PI;
-        
+
         let f_0 = mix(vec3(0.04), in.albedo, in.metallic);
         let k_s = fresnel(f_0, H, V);
         let k_d = (1.0 - k_s) * (1.0 - in.metallic);
-    
+
         let ndf = normal_distribution(in.roughness, N, H);
         let geom = geom_smith(in.roughness, N, V, L);
-    
+
         let ndv = max(dot(N, V), 0.0);
         let ndl = max(dot(N, L), 0.0);
         let specular = ndf * geom * k_s / max(4.0 * ndv * ndl, 0.000001);
-    
+
         let brdf = k_d * diffuse + specular;
         direct = brdf * SUN_COLOR * in.shadow * ndl;
     }
@@ -230,7 +230,7 @@ fn filter_spatial(uv: vec2<f32>, texel_size: vec2<f32>, noise: vec3<f32>) -> Fil
 
     for (var i = 0u; i < 12u; i++) {
         let offset = rotation * FILTER_KERNEL[i];
-        let sample_uv = uv + offset * radius; 
+        let sample_uv = uv + offset * radius;
 
         let val = textureSampleLevel(tex_illumination, sampler_linear, sample_uv, 0).rgb;
         min_val = min(min_val, val);

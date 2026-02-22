@@ -36,11 +36,11 @@ struct Model {
 
 @group(1) @binding(0) var main_sampler: sampler;
 @group(1) @binding(1) var tex_velocity: texture_storage_2d<rgba16float, read>;
-@group(1) @binding(2) var tex_depth: texture_2d<f32>;
-@group(1) @binding(3) var tex_color: texture_2d<f32>;
+@group(1) @binding(2) var tex_color: texture_2d<f32>;
 
 @group(2) @binding(0) var tex_acc: texture_2d<f32>;
 @group(2) @binding(1) var out_color: texture_storage_2d<rgba16float, write>;
+@group(2) @binding(2) var tex_depth: texture_2d<f32>;
 
 
 struct ComputeIn {

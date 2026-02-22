@@ -1,6 +1,7 @@
 @group(0) @binding(0) var tex_out_illum: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(1) var tex_normal: texture_storage_2d<r32uint, read>;
-@group(0) @binding(2) var tex_depth: texture_storage_2d<r32float, read>;
+
+@group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
+@group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
 
 struct VoxelSceneMetadata {
     size: vec3<u32>,
@@ -11,12 +12,12 @@ struct Palette {
 struct Chunk {
     mask: array<u32, 16>,
 }
-@group(1) @binding(0) var<uniform> scene: VoxelSceneMetadata;
-@group(1) @binding(1) var<uniform> palette: Palette;
-@group(1) @binding(2) var<storage, read> chunk_indices: array<u32>;
-@group(1) @binding(3) var<storage, read> chunks: array<Chunk>;
-@group(1) @binding(4) var tex_noise: texture_3d<f32>;
-@group(1) @binding(5) var sampler_noise: sampler;
+@group(2) @binding(0) var<uniform> scene: VoxelSceneMetadata;
+@group(2) @binding(1) var<uniform> palette: Palette;
+@group(2) @binding(2) var<storage, read> chunk_indices: array<u32>;
+@group(2) @binding(3) var<storage, read> chunks: array<Chunk>;
+@group(2) @binding(4) var tex_noise: texture_3d<f32>;
+@group(2) @binding(5) var sampler_noise: sampler;
 
 struct Environment {
 	sun_direction: vec3<f32>,
@@ -50,9 +51,9 @@ struct Model {
     normal_transform: mat3x3<f32>,
     inv_normal_transform: mat3x3<f32>,
 }
-@group(2) @binding(0) var<uniform> environment: Environment;
-@group(2) @binding(1) var<uniform> frame: FrameMetadata;
-@group(2) @binding(2) var<uniform> model: Model;
+@group(3) @binding(0) var<uniform> environment: Environment;
+@group(3) @binding(1) var<uniform> frame: FrameMetadata;
+@group(3) @binding(2) var<uniform> model: Model;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,

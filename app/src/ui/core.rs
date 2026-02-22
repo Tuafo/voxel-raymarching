@@ -59,7 +59,7 @@ impl Ui {
                 shadow_filter_radius: 7.0,
                 ambient_ray_max_distance: 10,
                 voxel_normal_factor: 0.5,
-                taa: true,
+                taa: false,
                 fxaa: false,
                 limit_fps: false,
                 max_fps: 300,
