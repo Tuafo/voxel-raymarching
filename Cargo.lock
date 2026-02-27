@@ -185,6 +185,7 @@ dependencies = [
  "image",
  "pollster",
  "prettyplease",
+ "proc-macro2",
  "quote",
  "serde",
  "serde_json",

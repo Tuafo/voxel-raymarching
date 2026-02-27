@@ -11,6 +11,8 @@ struct Environment {
 	shadow_filter_radius: f32,
 	max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    indirect_sky_intensity: f32,
+    debug_view: u32,
 }
 struct Camera {
 	view_proj: mat4x4<f32>,
@@ -56,6 +58,10 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let dimensions = textureDimensions(tex_color).xy;
     let pos = vec2<i32>(in.uv * vec2<f32>(dimensions));
+
+    if environment.debug_view != 0u {
+        return vec4(textureLoad(tex_color, pos, 0).rgb, 1.0);
+    }
 
     var color = vec3(0.0);
     if frame.fxaa_enabled == 0u {

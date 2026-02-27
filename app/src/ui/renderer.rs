@@ -66,7 +66,7 @@ impl Ui {
             window_state,
             renderer,
             frame_started: false,
-            debug: Default::default(),
+            debug: DebugWindow::new(),
             settings: Default::default(),
         }
     }

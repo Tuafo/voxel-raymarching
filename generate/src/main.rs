@@ -1,24 +1,85 @@
 use anyhow::{Context, Result};
+use clap::Parser;
 use flate2::write::ZlibEncoder;
-use generate::{MODEL_FILE_EXT, voxelize};
+use generate::{LIGHTMAP_FILE_EXT, MODEL_FILE_EXT, generate_lighting, voxelize};
 use std::{
     fs,
     io::{self, Seek, Write},
     path::{Path, PathBuf},
 };
 
-fn main() -> Result<()> {
-    let sources = walk_asset_sources(Path::new("app/assets"), "hdr")
-        .context("error while retrieving skybox sources")?;
-    create_lighting(&sources, Path::new("app/assets/generated"))
-        .context("error generating lighting")?;
+/// Generate engine assets
+#[derive(Parser, Debug)]
+#[command()]
+struct Args {
+    /// Generate specific models from `app/assets/models`
+    #[arg(short, long)]
+    models: bool,
 
-    // let sources = walk_glb_sources(Path::new("app/asses/models"), "glb")
-    //     .context("error while retrieving model sources")?;
-    // voxelize_models(&sources, Path::new("app/assets/generated"))
-    //     .context("error voxelizing models")?;
+    /// Generate specific models from `app/assets/lightmaps`
+    #[arg(short, long)]
+    lightmaps: bool,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let generate_all = !args.models && !args.lightmaps;
+
+    let (device, queue) = init_device().context("failed to initialize GPU context")?;
+
+    if generate_all || args.lightmaps {
+        let sources = walk_asset_sources(Path::new("app/assets/lightmaps"), "hdr")
+            .context("error while retrieving lightmap sources")?;
+
+        eprintln!("Generating lightmaps");
+        for src in &sources {
+            eprintln!("-    {} {:?}", src.name, src.path);
+        }
+
+        create_lighting(&device, &queue, &sources, Path::new("app/assets/generated"))
+            .context("error generating lighting")?;
+    }
+
+    if generate_all || args.models {
+        let sources = walk_asset_sources(Path::new("app/assets/models"), "glb")
+            .context("error while retrieving model sources")?;
+
+        eprintln!("Generating models");
+        for src in &sources {
+            eprintln!("-    {} {:?}", src.name, src.path);
+        }
+
+        voxelize_models(&device, &queue, &sources, Path::new("app/assets/generated"))
+            .context("error voxelizing models")?;
+    }
 
     Ok(())
+}
+
+fn init_device() -> Result<(wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
+
+    let mut features = wgpu::Features::default();
+    features |= wgpu::Features::FLOAT32_FILTERABLE;
+    features |= wgpu::Features::TEXTURE_BINDING_ARRAY;
+    features |= wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+
+    let mut limits = wgpu::Limits::default();
+    limits.max_sampled_textures_per_shader_stage = 260;
+    limits.max_buffer_size = 2 * 1024 * 1024 * 1024;
+    limits.max_binding_array_elements_per_shader_stage = 260;
+    limits.max_storage_textures_per_shader_stage = 6;
+    limits.max_compute_invocations_per_workgroup = 512;
+
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_features: features,
+        required_limits: limits,
+        ..Default::default()
+    }))?;
+
+    Ok((device, queue))
 }
 
 #[derive(Debug)]
@@ -77,34 +138,42 @@ fn walk_asset_sources(path: &Path, ext: &str) -> Result<Vec<AssetSource>> {
     Ok(sources)
 }
 
-fn create_lighting(sources: &[AssetSource], out_dir: &Path) -> Result<()> {
-    todo!()
+fn create_lighting(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    sources: &[AssetSource],
+    out_dir: &Path,
+) -> Result<()> {
+    for src in sources {
+        let hdr = fs::File::open(&src.path)?;
+        let mut reader = io::BufReader::new(&hdr);
+        let lightmap = generate_lighting(&mut reader, device, queue)?;
+
+        let path = out_dir.join(format!("{}.{}", &src.name, LIGHTMAP_FILE_EXT));
+
+        let hdr = fs::File::open(&src.path)?;
+        let mut reader = io::BufReader::new(&hdr);
+        let data = lightmap.serialize(&src.name, &mut reader, device, queue)?;
+
+        let file = fs::File::create(&path)?;
+        let mut enc = ZlibEncoder::new(file, flate2::Compression::best());
+        enc.write_all(&data)?;
+        let mut res = enc.finish()?;
+        let length = res
+            .stream_position()
+            .map(|len| len as f64 / (1024.0 * 1024.0))?;
+
+        eprintln!("Completed {} ({:.2} MB)", src.name, length);
+    }
+    Ok(())
 }
 
-fn voxelize_models(sources: &[AssetSource], out_dir: &Path) -> Result<()> {
-    let (device, queue) = {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
-
-        let mut features = wgpu::Features::default();
-        features |= wgpu::Features::TEXTURE_BINDING_ARRAY;
-        features |= wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
-
-        let mut limits = wgpu::Limits::default();
-        limits.max_sampled_textures_per_shader_stage = 260;
-        limits.max_buffer_size = 2 * 1024 * 1024 * 1024;
-        limits.max_binding_array_elements_per_shader_stage = 260;
-        limits.max_storage_textures_per_shader_stage = 6;
-        limits.max_compute_invocations_per_workgroup = 512;
-
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: features,
-            required_limits: limits,
-            ..Default::default()
-        }))
-    }?;
-
+fn voxelize_models(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    sources: &[AssetSource],
+    out_dir: &Path,
+) -> Result<()> {
     for src in sources {
         let glb = fs::File::open(&src.path)?;
         let mut reader = io::BufReader::new(&glb);
@@ -115,7 +184,12 @@ fn voxelize_models(sources: &[AssetSource], out_dir: &Path) -> Result<()> {
         let file = fs::File::create(&path)?;
         let mut enc = ZlibEncoder::new(file, flate2::Compression::best());
         enc.write_all(&data)?;
-        enc.finish()?;
+        let mut res = enc.finish()?;
+        let length = res
+            .stream_position()
+            .map(|len| len as f64 / (1024.0 * 1024.0))?;
+
+        eprintln!("Completed {} ({:.2} MB)", src.name, length);
     }
 
     Ok(())

@@ -1,15 +1,17 @@
 use std::{sync::Arc, time::Duration};
 
-use wgpu::util::DeviceExt;
+use wgpu::{TextureFormat, util::DeviceExt};
 
 use crate::{
     SizedWindow,
     config::Config,
     engine::Engine,
+    lightmap::LIGHTMAPS,
     models::MODELS,
     renderer::{
         buffers::{self, CameraDataBuffer, EnvironmentDataBuffer, ModelDataBuffer},
         noise,
+        oil::{DeviceUtils, storage_texture, uniform_buffer},
         quad::Quad,
         timing::{RenderTimer, TimedEncoder},
         utils::{
@@ -50,6 +52,7 @@ pub struct Renderer {
 struct PipelineLayouts {
     raymarch: wgpu::PipelineLayout,
     ambient: wgpu::PipelineLayout,
+    specular: wgpu::PipelineLayout,
     lighting_resolve: wgpu::PipelineLayout,
     deferred: wgpu::PipelineLayout,
     taa: wgpu::PipelineLayout,
@@ -59,6 +62,7 @@ struct PipelineLayouts {
 struct Pipelines {
     raymarch: wgpu::ComputePipeline,
     ambient: wgpu::ComputePipeline,
+    specular: wgpu::ComputePipeline,
     lighting_resolve: wgpu::ComputePipeline,
     deferred: wgpu::ComputePipeline,
     taa: wgpu::ComputePipeline,
@@ -73,6 +77,7 @@ struct BindGroupLayouts {
     ambient_gbuffer: wgpu::BindGroupLayout,
     ambient_swap: wgpu::BindGroupLayout,
     ambient_static: wgpu::BindGroupLayout,
+    specular_gbuffer: wgpu::BindGroupLayout,
     lighting_resolve_gbuffer: wgpu::BindGroupLayout,
     lighting_resolve_swap: wgpu::BindGroupLayout,
     deferred_gbuffer: wgpu::BindGroupLayout,
@@ -91,6 +96,7 @@ struct BindGroups {
     ambient_gbuffer: Option<wgpu::BindGroup>,
     ambient_swap: Option<SwapchainBindGroup>,
     ambient_static: wgpu::BindGroup,
+    specular_gbuffer: Option<wgpu::BindGroup>,
     lighting_resolve_gbuffer: Option<wgpu::BindGroup>,
     lighting_resolve_swap: Option<SwapchainBindGroup>,
     deferred_gbuffer: Option<wgpu::BindGroup>,
@@ -109,7 +115,7 @@ struct Textures {
     gbuffer_illumination: Option<wgpu::Texture>,
     gbuffer_acc_illumination: Option<SwapchainTexture>,
     gbuffer_acc_illumination_history_len: Option<SwapchainTexture>,
-    // gbuffer_acc_illumination_moments: Option<SwapchainTexture>,
+    gbuffer_specular: Option<wgpu::Texture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
     voxel_brickmap: wgpu::Texture,
@@ -142,91 +148,40 @@ impl Renderer {
         ui: &mut Ui,
     ) -> Self {
         let bg_layouts = BindGroupLayouts {
-            per_frame_shared: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("per_frame_shared"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
-            raymarch_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("raymarch_gbuffer"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
-            raymarch_swap: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("raymarch_swap"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::R32Uint,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::R32Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
+            per_frame_shared: device.layout(
+                "per_frame_shared",
+                (
+                    uniform_buffer().visible_compute().visible_fragment(),
+                    uniform_buffer().visible_compute().visible_fragment(),
+                    uniform_buffer().visible_compute().visible_fragment(),
+                ),
+            ),
+            raymarch_gbuffer: device.layout(
+                "raymarch_gbuffer",
+                (
+                    storage_texture(TextureFormat::Rgba16Float)
+                        .visible_compute()
+                        .write_only()
+                        .dimension_2d(),
+                    storage_texture(TextureFormat::Rgba16Float)
+                        .visible_compute()
+                        .write_only()
+                        .dimension_2d(),
+                ),
+            ),
+            raymarch_swap: device.layout(
+                "raymarch_swap",
+                (
+                    storage_texture(TextureFormat::R32Uint)
+                        .visible_compute()
+                        .write_only()
+                        .dimension_2d(),
+                    storage_texture(TextureFormat::R32Float)
+                        .visible_compute()
+                        .write_only()
+                        .dimension_2d(),
+                ),
+            ),
             raymarch_static: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("raymarch_static"),
                 entries: &[
@@ -396,6 +351,19 @@ impl Renderer {
                         count: None,
                     },
                 ],
+            }),
+            specular_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("specular_gbuffer"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                }],
             }),
             lighting_resolve_gbuffer: device.create_bind_group_layout(
                 &wgpu::BindGroupLayoutDescriptor {
@@ -585,6 +553,16 @@ impl Renderer {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
                 ],
             }),
             deferred_static: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -764,6 +742,16 @@ impl Renderer {
                 ],
                 immediate_size: 0,
             }),
+            specular: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("specular"),
+                bind_group_layouts: &[
+                    &bg_layouts.specular_gbuffer,
+                    &bg_layouts.ambient_swap,
+                    &bg_layouts.raymarch_static,
+                    &bg_layouts.per_frame_shared,
+                ],
+                immediate_size: 0,
+            }),
             lighting_resolve: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("lighting_resolve"),
                 bind_group_layouts: &[
@@ -802,6 +790,7 @@ impl Renderer {
         struct Shaders {
             raymarch: wgpu::ShaderModule,
             ambient: wgpu::ShaderModule,
+            specular: wgpu::ShaderModule,
             deferred: wgpu::ShaderModule,
             lighting_resolve: wgpu::ShaderModule,
             taa: wgpu::ShaderModule,
@@ -818,6 +807,12 @@ impl Renderer {
                 label: Some("ambient"),
                 source: wgpu::ShaderSource::Wgsl(
                     std::include_str!("../shaders/ambient.wgsl").into(),
+                ),
+            }),
+            specular: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("specular"),
+                source: wgpu::ShaderSource::Wgsl(
+                    std::include_str!("../shaders/specular.wgsl").into(),
                 ),
             }),
             lighting_resolve: device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -855,6 +850,14 @@ impl Renderer {
                 label: Some("ambient"),
                 layout: Some(&pipeline_layouts.ambient),
                 module: &shaders.ambient,
+                entry_point: Some("compute_main"),
+                compilation_options: Default::default(),
+                cache: None,
+            }),
+            specular: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("specular"),
+                layout: Some(&pipeline_layouts.specular),
+                module: &shaders.specular,
                 entry_point: Some("compute_main"),
                 compilation_options: Default::default(),
                 cache: None,
@@ -916,6 +919,7 @@ impl Renderer {
 
         // see build script
         let scene = MODELS.sponza.load(device, queue).unwrap();
+        let ibl = LIGHTMAPS.sky.load(device, queue).unwrap();
 
         let textures = Textures {
             gbuffer_albedo: None,
@@ -925,16 +929,13 @@ impl Renderer {
             gbuffer_illumination: None,
             gbuffer_acc_illumination: None,
             gbuffer_acc_illumination_history_len: None,
+            gbuffer_specular: None,
             deferred_output: None,
             out_color: None,
             voxel_brickmap: scene.data.tex_brickmap,
             noise_cos_hemisphere_gauss: noise::noise_cos_hemisphere_gauss(device, queue).unwrap(),
             noise_uniform_gauss: noise::noise_uniform_gauss(device, queue).unwrap(),
         };
-
-        let src = std::fs::File::open("app/assets/sky.hdr").unwrap();
-        let src = std::io::BufReader::new(src);
-        let ibl = generate::generate_lighting(src, &device, &queue).unwrap();
 
         let samplers = Samplers {
             linear: device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1119,6 +1120,7 @@ impl Renderer {
                     },
                 ],
             }),
+            specular_gbuffer: None,
             lighting_resolve_gbuffer: None,
             lighting_resolve_swap: None,
             deferred_gbuffer: None,
@@ -1377,6 +1379,26 @@ impl Renderer {
                 ..Default::default()
             });
 
+        self.textures.gbuffer_specular = Some(device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gbuffer_specular"),
+            size,
+            sample_count: 1,
+            format: wgpu::TextureFormat::Rgba16Float,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            mip_level_count: 1,
+            view_formats: &[],
+        }));
+        let view_gbuffer_specular = self
+            .textures
+            .gbuffer_specular
+            .as_ref()
+            .unwrap()
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("gbuffer_specular"),
+                ..Default::default()
+            });
+
         self.textures.deferred_output = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("deferred_output"),
             size,
@@ -1473,6 +1495,16 @@ impl Renderer {
                 ],
             },
         ));
+
+        self.bind_groups.specular_gbuffer =
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("specular_gbuffer"),
+                layout: &self.bg_layouts.specular_gbuffer,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
+                }],
+            }));
 
         self.bind_groups.lighting_resolve_gbuffer =
             Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1571,6 +1603,12 @@ impl Renderer {
                     SwapchainBindGroupEntry {
                         binding: 2,
                         resource: view_gbuffer_acc_illumination.both(),
+                    },
+                    SwapchainBindGroupEntry {
+                        binding: 3,
+                        resource: SwapchainBindingResource::Single(
+                            wgpu::BindingResource::TextureView(&view_gbuffer_specular),
+                        ),
                     },
                 ],
             },
@@ -1688,7 +1726,8 @@ impl Renderer {
                     max_ambient_distance: ctx.config.ambient_ray_max_distance,
                     voxel_normal_factor: ctx.config.voxel_normal_factor,
                     debug_view: ctx.config.view as u32,
-                    pad: [0.0; 2],
+                    indirect_sky_intensity: ctx.config.indirect_sky_intensity,
+                    pad: 0.0,
                 }]),
             );
 
@@ -1743,6 +1782,20 @@ impl Renderer {
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("ambient");
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        }
+
+        // specular pass
+        {
+            let mut pass = encoder.begin_compute_pass_timed("Specular", &mut self.timing);
+
+            pass.set_pipeline(&self.pipelines.specular);
+            pass.set_bind_group(0, &self.bind_groups.specular_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.raymarch_static, &[]);
+            pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
+
+            pass.insert_debug_marker("specular");
             pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
         }
 

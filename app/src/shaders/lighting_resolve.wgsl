@@ -21,6 +21,8 @@ struct Environment {
 	shadow_filter_radius: f32,
 	max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    indirect_sky_intensity: f32,
+    debug_view: u32,
 }
 struct Camera {
 	view_proj: mat4x4<f32>,
@@ -54,14 +56,14 @@ struct ComputeIn {
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
     let cur_pos = vec2<i32>(in.id.xy);
-    let cur_color = textureLoad(tex_cur_illum, cur_pos).rg;
+    let cur_color = textureLoad(tex_cur_illum, cur_pos).rgb;
     var cur_moments: vec2<f32>;
     cur_moments.r = cur_color.r;
     cur_moments.g = cur_moments.r * cur_moments.r;
-    
+
     let acc = reproject(cur_pos);
 
-    var res_color: vec2<f32>;
+    var res_color: vec3<f32>;
     var res_moments: vec2<f32>;
     var history_len: u32;
 
@@ -69,26 +71,26 @@ fn compute_main(in: ComputeIn) {
         res_color = cur_color;
         res_moments = cur_moments;
         history_len = 1u;
-    } 
+    }
     if !acc.reject_history {
         history_len = min(32u, acc.history_len + 1u);
-        
+
         // TODO add clamping parameters to customize each alpha
         let alpha_moments = 1.0 / f32(history_len);
-        // res_moments 
+        // res_moments
 
         let alpha_color = 1.0 / f32(history_len);
         res_color = mix(acc.color, cur_color, alpha_color);
     }
-    
-    textureStore(tex_out_illum, cur_pos, vec4<f32>(res_color, 0.0, 1.0));
+
+    textureStore(tex_out_illum, cur_pos, vec4<f32>(res_color, 1.0));
     textureStore(tex_out_history_len, cur_pos, vec4<u32>(history_len, 0, 0, 0));
 }
 
 struct ReprojectResult {
     reject_history: bool,
     history_len: u32,
-    color: vec2<f32>,
+    color: vec3<f32>,
     moments: vec2<f32>,
 }
 
@@ -100,7 +102,7 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
     // let acc_jitter = vec2(0.0);
     let cur_jitter = texel_size * select(vec2(0.0), environment.camera.jitter - 0.5, frame.taa_enabled != 0u);
     let acc_jitter = texel_size * select(vec2(0.0), environment.prev_camera.jitter - 0.5, frame.taa_enabled != 0u);
-        
+
     let cur_uv = (vec2<f32>(cur_pos) + 0.5) * texel_size;
 
     let cur_depth = textureLoad(tex_depth, cur_pos).r;
@@ -111,11 +113,11 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
 
     let acc_uv = cur_uv - velocity;
     let acc_pos = acc_uv * vec2<f32>(dimensions);
-    
+
     var res: ReprojectResult;
     res.reject_history = true;
     res.history_len = 0u;
-    res.color = vec2(0.0);
+    res.color = vec3(0.0);
     res.moments = vec2(0.0);
 
     if cur.is_sky {
@@ -131,7 +133,7 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
             vec2<i32>(0, 1),
             vec2<i32>(1, 1),
         );
-        
+
         let f = fract(acc_pos - 0.5);
         let w = array<f32, 4>(
             (1.0 - f.x) * (1.0 - f.y),
@@ -141,38 +143,38 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
         );
 
         var w_sum = 0.0;
-        var acc_sum = vec2(0.0);
+        var acc_sum = vec3(0.0);
         var acc_moments = vec2(0.0);
-    
+
         for (var i = 0u; i < 4u; i++) {
             let offset = vec2<f32>(BILINEAR_OFFSET[i]);
-    
+
             let sample_pos = acc_pos + offset - 0.5;
             let sample_texel = vec2<i32>(floor(sample_pos));
             let sample_uv =  (vec2<f32>(sample_texel) + 0.5) * texel_size;
-    
+
             if any(sample_pos < vec2(0.0)) || any(sample_pos >= vec2<f32>(dimensions)) {
                 continue;
             }
-        
+
             let acc_depth = textureLoad(tex_prev_depth, sample_texel).r;
             let acc_packed = textureLoad(tex_prev_normal, sample_texel).r;
             let acc = gather_surface(sample_uv + acc_jitter, environment.prev_camera.inv_view_proj, acc_depth, acc_packed);
-    
+
             if is_reprojection_valid(cur, acc) {
                 let weight = w[i];
 
                 let val = textureLoad(tex_acc_illum, sample_texel);
 
-                acc_sum += weight * val.rg;
+                acc_sum += weight * val.rgb;
                 acc_moments += weight * val.ba;
                 w_sum += weight;
-            }    
+            }
         }
-        
+
         if w_sum > 0.001 {
             res.reject_history = false;
-            res.color = acc_sum / w_sum; 
+            res.color = acc_sum / w_sum;
             res.moments = acc_moments / w_sum;
         }
     }
@@ -191,11 +193,11 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
     //             if any(sample_pos < vec2(0.0)) || any(sample_pos >= vec2<f32>(dimensions)) {
     //                 continue;
     //             }
-            
+
     //             let acc_depth = textureLoad(tex_prev_depth, sample_texel).r;
     //             let acc_packed = textureLoad(tex_prev_normal, sample_texel).r;
     //             let acc = gather_surface(sample_uv + acc_jitter, environment.prev_camera.inv_view_proj, acc_depth, acc_packed);
-        
+
     //             if is_reprojection_valid(cur, acc) {
     //                 acc_sum += textureLoad(tex_acc_illum, sample_texel, 0);
     //                 w_sum += 1.0;
@@ -229,7 +231,7 @@ fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
     if pow(abs(dot(cur.ws_hit_normal, acc.ws_hit_normal)), 2.0) < 0.8 {
         return false;
     }
-    
+
     return true;
 }
 
@@ -248,7 +250,7 @@ fn gather_surface(uv: vec2<f32>, inv_view_proj: mat4x4<f32>, depth: f32, packed:
     }
 
     let ray = primary_ray(uv, inv_view_proj);
-    
+
     let voxel = unpack_voxel(packed);
 
     let ls_pos = ray.ls_origin + ray.direction * depth;

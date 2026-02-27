@@ -1,6 +1,9 @@
 use std::{f64::consts::PI, time::Duration};
 
-use crate::{config::DebugView, ui::UiCtx};
+use crate::{
+    config::{DEBUG_VIEWS, DebugView},
+    ui::UiCtx,
+};
 
 #[derive(Debug, Default)]
 pub struct DebugWindow {
@@ -15,8 +18,18 @@ pub struct DebugWindow {
     pub camera_near: f64,
     pub camera_far: f64,
     pub sun_direction: glam::Vec3,
+    view: (&'static str, DebugView),
     limit_fps: bool,
     max_fps: u32,
+}
+
+impl DebugWindow {
+    pub fn new() -> Self {
+        Self {
+            view: DEBUG_VIEWS[0],
+            ..Default::default()
+        }
+    }
 }
 
 fn grid<R>(ui: &mut egui::Ui, label: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) {
@@ -117,31 +130,11 @@ impl DebugWindow {
 
                 ui.label("View");
                 egui::ComboBox::from_label("")
-                    .selected_text(format!("{:?}", config.view))
+                    .selected_text(self.view.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut config.view, DebugView::Composite, "Composite");
-                        ui.selectable_value(&mut config.view, DebugView::Depth, "Depth");
-                        ui.selectable_value(&mut config.view, DebugView::Albedo, "Albedo");
-                        ui.selectable_value(&mut config.view, DebugView::HitNormal, "Hit normal");
-                        ui.selectable_value(
-                            &mut config.view,
-                            DebugView::SurfaceNormal,
-                            "Surface normal",
-                        );
-                        ui.selectable_value(&mut config.view, DebugView::Ambient, "Ambient");
-                        ui.selectable_value(&mut config.view, DebugView::Shadow, "Shadow");
-                        ui.selectable_value(&mut config.view, DebugView::Velocity, "Velocity");
-                        ui.selectable_value(&mut config.view, DebugView::SkyAlbedo, "Sky Albedo");
-                        ui.selectable_value(
-                            &mut config.view,
-                            DebugView::SkyIrradiance,
-                            "Sky Irradiance",
-                        );
-                        ui.selectable_value(
-                            &mut config.view,
-                            DebugView::SkyPrefiler,
-                            "Sky Prefilter",
-                        );
+                        for view in DEBUG_VIEWS {
+                            ui.selectable_value(&mut self.view, *view, view.0);
+                        }
                     });
                 ui.end_row();
 
@@ -180,6 +173,13 @@ impl DebugWindow {
                 ));
                 ui.end_row();
 
+                ui.label("Indirect Sky Intensity");
+                ui.add(egui::Slider::new(
+                    &mut config.indirect_sky_intensity,
+                    0.0..=1.0,
+                ));
+                ui.end_row();
+
                 ui.label("Ambient Max Distance");
                 ui.add(egui::Slider::new(
                     &mut config.ambient_ray_max_distance,
@@ -206,6 +206,8 @@ impl DebugWindow {
                 ));
             });
         });
+
+        ctx.config.view = self.view.1;
 
         if ctx.config.max_fps.is_some() != self.limit_fps
             || ctx.config.max_fps.is_some_and(|m| m != self.max_fps)

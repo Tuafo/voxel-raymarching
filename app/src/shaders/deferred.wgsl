@@ -5,6 +5,7 @@
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
 @group(1) @binding(2) var tex_illumination: texture_2d<f32>;
+@group(1) @binding(3) var tex_specular: texture_2d<f32>;
 
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var sampler_noise: sampler;
@@ -24,6 +25,7 @@ struct Environment {
 	shadow_filter_radius: f32,
 	max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    indirect_sky_intensity: f32,
     debug_view: u32,
 }
 struct Camera {
@@ -84,6 +86,8 @@ fn compute_main(in: ComputeIn) {
     let illumination = textureLoad(tex_illumination, pos, 0);
     let shadow = illumination.r;
     let ambient = illumination.g;
+    let specular = textureLoad(tex_specular, pos, 0).rgb;
+    // let specular = illumination.b;
     let skybox_irradiance = textureSampleLevel(tex_irradiance, sampler_linear, voxel.ws_normal.xzy, 0.0).rgb;
 
     let ls_pos = ray.ls_origin + ray.direction * depth;
@@ -98,6 +102,7 @@ fn compute_main(in: ComputeIn) {
     surface.roughness = voxel.roughness;
     surface.shadow = shadow;
     surface.ao = ambient;
+    surface.specular = specular;
     surface.sky_irradiance = skybox_irradiance;
     var color = pbr(surface);
 
@@ -105,7 +110,7 @@ fn compute_main(in: ComputeIn) {
         color *= 0.00001;
         switch environment.debug_view {
             case 1u: {
-                color += vec3(surface.roughness, surface.metallic, 0.0);
+                color += surface.albedo;
             }
             case 2u {
                 color += depth * 0.005;
@@ -117,21 +122,30 @@ fn compute_main(in: ComputeIn) {
                 color += voxel.ws_normal;
             }
             case 5u {
-                color += vec3(shadow);
+                color += vec3(surface.roughness);
             }
             case 6u {
-                color += vec3(ambient);
+                color += vec3(surface.metallic);
             }
             case 7u {
-                color += vec3(abs(velocity), 0.0);
+                color += vec3(shadow);
             }
             case 8u {
-                color += textureSampleLevel(tex_skybox, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
+                color += vec3(ambient);
             }
             case 9u {
-                color += textureSampleLevel(tex_irradiance, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
+                color += vec3(surface.specular);
             }
             case 10u {
+                color += vec3(abs(velocity), 0.0);
+            }
+            case 11u {
+                color += textureSampleLevel(tex_skybox, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
+            }
+            case 12u {
+                color += textureSampleLevel(tex_irradiance, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
+            }
+            case 13u {
                 let t = cos(f32(frame.frame_id) / 300.0) * 0.5 + 0.5;
                 color += textureSampleLevel(tex_prefilter, sampler_linear, ray.ws_direction.xzy, t * 5.0).rgb;
             }
@@ -156,6 +170,7 @@ struct PbrInput {
     albedo: vec3<f32>,
     metallic: f32,
     roughness: f32,
+    specular: vec3<f32>,
     shadow: f32,
     ao: f32,
     sky_irradiance: vec3<f32>,
@@ -168,7 +183,6 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     let H = normalize(V + L);
     let R = reflect(-V, N);
 
-    const AMBIENT: vec3<f32> = vec3<f32>(1.0) * 0.1;
     const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 5.8;
 
     var direct: vec3<f32>;
@@ -201,9 +215,10 @@ fn pbr(in: PbrInput) -> vec3<f32> {
         let diffuse = in.sky_irradiance * in.albedo / PI;
         // let diffuse = vec3(0.);
 
-        let specular = 0.3 * sky_prefilter * (k_s * sky_brdf.x + sky_brdf.y);
+        // let specular = in.specular * sky_prefilter * (k_s * sky_brdf.x + sky_brdf.y);
+        let specular = in.specular;
 
-        indirect = (k_d * diffuse + specular) * in.ao * 0.1;
+        indirect = (k_d * diffuse + specular) * in.ao * environment.indirect_sky_intensity;
     }
     let res = direct + indirect;
     return res;

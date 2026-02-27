@@ -1,4 +1,5 @@
 @group(0) @binding(0) var tex_out_illum: texture_storage_2d<rgba16float, write>;
+// @group(0) @binding(1) var tex_out_specular: texture_storage_2d<rgba16float, write>;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
@@ -29,6 +30,8 @@ struct Environment {
 	shadow_filter_radius: f32,
 	max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    indirect_sky_intensity: f32,
+    debug_view: u32,
 }
 struct Camera {
 	view_proj: mat4x4<f32>,
@@ -95,8 +98,9 @@ fn compute_main(in: ComputeIn) {
     // var ambient = 1.0;
     var ambient = trace_ambient(pos, noise, ls_pos, ls_hit_normal);
     var shadow = trace_shadow(pos, noise, ls_pos, ls_normal);
+    var specular = trace_specular(pos, noise, ls_pos, ls_normal, voxel.roughness * voxel.roughness);
 
-    textureStore(tex_out_illum, pos, vec4(shadow, ambient, 0.0, 1.0));
+    textureStore(tex_out_illum, pos, vec4(shadow, ambient, specular, 1.0));
 }
 
 fn trace_ambient(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>) -> f32 {
@@ -123,6 +127,23 @@ fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: 
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
     var dir = rand_hemisphere_direction(noise.xy, environment.shadow_spread);
     dir = align_direction(dir, light_dir);
+    
+    var ray: SparseRay;
+    ray.origin = ls_pos + environment.shadow_bias * ls_normal;
+    ray.direction = dir;
+
+    let occluded = raymarch_shadow(ray);
+    // let occluded = false;
+    return select(1.0, 0.0, occluded);
+}
+
+fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, roughness: f32) -> f32 {
+    let camera_pos = (model.inv_transform * vec4<f32>(environment.camera.ws_position, 1.0)).xyz;
+    let view_dir = normalize(ls_pos - camera_pos);
+    let reflect_dir = normalize(reflect(view_dir, ls_normal));
+
+    var dir = rand_hemisphere_direction(noise.xy, roughness);
+    dir = align_direction(dir, reflect_dir);
     
     var ray: SparseRay;
     ray.origin = ls_pos + environment.shadow_bias * ls_normal;

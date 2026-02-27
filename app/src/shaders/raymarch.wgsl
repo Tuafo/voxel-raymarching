@@ -31,6 +31,8 @@ struct Environment {
 	shadow_filter_radius: f32,
 	max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    indirect_sky_intensity: f32,
+    debug_view: u32,
 }
 struct Camera {
 	view_proj: mat4x4<f32>,
@@ -116,9 +118,11 @@ fn trace_scene(pos: vec2<i32>) -> SceneResult {
 	let albedo = palette_color(ray.voxel.palette_index);
 
     let ls_normal = align_per_voxel_normal(ray.hit_normal, ray.voxel.normal);
+	// let ls_normal = ray.hit_normal;
     let ws_normal = normalize(model.normal_transform * ls_normal);
 	
-	let packed = repack_voxel(ws_normal,ray.voxel.metallic, ray.voxel.roughness, ray.hit_mask);
+	// let packed = repack_voxel(ws_normal,ray.voxel.metallic , ray.voxel.roughness , ray.hit_mask);
+	let packed = repack_voxel(ws_normal,1.0, 0.0, ray.hit_mask);
 
 	var res: SceneResult;
 	res.albedo = albedo;

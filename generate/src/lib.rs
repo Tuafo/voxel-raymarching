@@ -1,8 +1,9 @@
 pub mod gltf;
-mod lighting;
-mod voxelize;
+mod lightmaps;
+mod models;
 
-pub use lighting::*;
-pub use voxelize::*;
+pub use lightmaps::*;
+pub use models::*;
 
 pub const MODEL_FILE_EXT: &'static str = "voxel";
+pub const LIGHTMAP_FILE_EXT: &'static str = "lightmap";

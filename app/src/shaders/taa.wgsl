@@ -8,6 +8,8 @@ struct Environment {
 	shadow_filter_radius: f32,
 	max_ambient_distance: u32,
     smooth_normal_factor: f32,
+    indirect_sky_intensity: f32,
+    debug_view: u32,
 }
 struct Camera {
 	view_proj: mat4x4<f32>,
