@@ -2,6 +2,7 @@ mod config;
 mod engine;
 mod renderer;
 mod ui;
+mod utils;
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 

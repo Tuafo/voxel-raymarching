@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use wgpu::{TextureFormat, util::DeviceExt};
+use wgpu::{ShaderStages, util::DeviceExt};
 
 use crate::{
     SizedWindow,
@@ -11,7 +11,6 @@ use crate::{
     renderer::{
         buffers::{self, CameraDataBuffer, EnvironmentDataBuffer, ModelDataBuffer},
         noise,
-        oil::{DeviceUtils, storage_texture, uniform_buffer},
         quad::Quad,
         timing::{RenderTimer, TimedEncoder},
         utils::{
@@ -20,6 +19,7 @@ use crate::{
         },
     },
     ui::{Ui, UiCtx},
+    utils::layout::*,
 };
 
 pub struct RendererCtx<'a> {
@@ -150,376 +150,100 @@ impl Renderer {
         let bg_layouts = BindGroupLayouts {
             per_frame_shared: device.layout(
                 "per_frame_shared",
-                (
-                    uniform_buffer().visible_compute().visible_fragment(),
-                    uniform_buffer().visible_compute().visible_fragment(),
-                    uniform_buffer().visible_compute().visible_fragment(),
-                ),
+                ShaderStages::COMPUTE | ShaderStages::FRAGMENT,
+                (uniform_buffer(), uniform_buffer(), uniform_buffer()),
             ),
             raymarch_gbuffer: device.layout(
                 "raymarch_gbuffer",
+                ShaderStages::COMPUTE,
                 (
-                    storage_texture(TextureFormat::Rgba16Float)
-                        .visible_compute()
-                        .write_only()
-                        .dimension_2d(),
-                    storage_texture(TextureFormat::Rgba16Float)
-                        .visible_compute()
-                        .write_only()
-                        .dimension_2d(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().write_only(),
                 ),
             ),
             raymarch_swap: device.layout(
                 "raymarch_swap",
+                ShaderStages::COMPUTE,
                 (
-                    storage_texture(TextureFormat::R32Uint)
-                        .visible_compute()
-                        .write_only()
-                        .dimension_2d(),
-                    storage_texture(TextureFormat::R32Float)
-                        .visible_compute()
-                        .write_only()
-                        .dimension_2d(),
+                    storage_texture().r32uint().dimension_2d().write_only(),
+                    storage_texture().r32float().dimension_2d().write_only(),
                 ),
             ),
-            raymarch_static: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("raymarch_static"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::R32Uint,
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 6,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                        count: None,
-                    },
-                ],
-            }),
-            ambient_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("ambient_gbuffer"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                }],
-            }),
-            ambient_swap: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("ambient_swap"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::R32Uint,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::R32Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
-            ambient_static: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("ambient_static"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                        count: None,
-                    },
-                ],
-            }),
-            specular_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("specular_gbuffer"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                }],
-            }),
-            lighting_resolve_gbuffer: device.create_bind_group_layout(
-                &wgpu::BindGroupLayoutDescriptor {
-                    label: Some("lighting_resolve_gbuffer"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::Rgba16Float,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::Rgba16Float,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                    ],
-                },
+            raymarch_static: device.layout(
+                "raymarch_static",
+                ShaderStages::COMPUTE,
+                (
+                    uniform_buffer(),
+                    uniform_buffer(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
+                    storage_texture().r32uint().dimension_3d().read_only(),
+                    texture().unfilterable_float().dimension_3d(),
+                    sampler().non_filtering(),
+                ),
             ),
-            lighting_resolve_swap: device.create_bind_group_layout(
-                &wgpu::BindGroupLayoutDescriptor {
-                    label: Some("lighting_resolve_swap"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::WriteOnly,
-                                format: wgpu::TextureFormat::Rgba16Float,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::Rgba16Float,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::WriteOnly,
-                                format: wgpu::TextureFormat::R32Uint,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::R32Uint,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 4,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::R32Uint,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 5,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::R32Uint,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 6,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::R32Float,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 7,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::ReadOnly,
-                                format: wgpu::TextureFormat::R32Float,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                            },
-                            count: None,
-                        },
-                    ],
-                },
+            ambient_gbuffer: device.layout(
+                "ambient_gbuffer",
+                ShaderStages::COMPUTE,
+                storage_texture().rgba16float().dimension_2d().write_only(),
             ),
-            deferred_gbuffer: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("deferred_gbuffer"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
+            ambient_swap: device.layout(
+                "ambient_swap",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32float().dimension_2d().read_only(),
+                ),
+            ),
+            ambient_static: device.layout(
+                "ambient_static",
+                ShaderStages::COMPUTE,
+                (
+                    uniform_buffer(),
+                    uniform_buffer(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
+                    texture().unfilterable_float().dimension_3d(),
+                    sampler().non_filtering(),
+                ),
+            ),
+            specular_gbuffer: device.layout(
+                "specular_gbuffer",
+                ShaderStages::COMPUTE,
+                storage_texture().rgba16float().dimension_2d().write_only(),
+            ),
+            lighting_resolve_gbuffer: device.layout(
+                "lighting_resolve_gbuffer",
+                ShaderStages::COMPUTE,
+                (
+                    sampler().filtering(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                ),
+            ),
+            lighting_resolve_swap: device.layout(
+                "lighting_resolve_swap",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().write_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
+                    storage_texture().r32float().dimension_2d().read_only(),
+                    storage_texture().r32float().dimension_2d().read_only(),
+                ),
+            ),
+            deferred_gbuffer: device.layout(
+                "deferred_gbuffer",
+                ShaderStages::COMPUTE,
+                (
+                    storage_texture().rgba16float().dimension_2d().write_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                    storage_texture().rgba16float().dimension_2d().read_only(),
+                ),
+            ),
             deferred_swap: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("deferred_swap"),
                 entries: &[
