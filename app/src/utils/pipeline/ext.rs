@@ -15,6 +15,7 @@ impl PipelineUtils for wgpu::Device {
             device: self,
             label,
             module,
+            entry_point: None,
             cache: None,
             immediate_size: 0,
             compilation_options: Default::default(),
@@ -26,6 +27,7 @@ pub struct ComputePipelineBase<'a> {
     pub device: &'a wgpu::Device,
     pub label: &'a str,
     pub module: &'a wgpu::ShaderModule,
+    pub entry_point: Option<&'a str>,
     pub cache: Option<&'a wgpu::PipelineCache>,
     pub compilation_options: wgpu::PipelineCompilationOptions<'a>,
     pub immediate_size: u32,
@@ -34,6 +36,11 @@ pub struct ComputePipelineBase<'a> {
 impl<'a> ComputePipelineBase<'a> {
     pub fn immediate_size(mut self, value: u32) -> Self {
         self.immediate_size = value;
+        self
+    }
+
+    pub fn entry_point(mut self, name: &'a str) -> Self {
+        self.entry_point = Some(name);
         self
     }
 
@@ -73,7 +80,7 @@ impl ComputePipelineBase<'_> {
                     },
                 )),
                 module: self.module,
-                entry_point: None,
+                entry_point: self.entry_point,
                 compilation_options: self.compilation_options,
                 cache: self.cache,
             })

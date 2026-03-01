@@ -1249,18 +1249,18 @@ impl Renderer {
         }
 
         // specular pass
-        {
-            let mut pass = encoder.begin_compute_pass_timed("Specular", &mut self.timing);
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Specular", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.specular);
-            pass.set_bind_group(0, &self.bind_groups.specular_gbuffer, &[]);
-            pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
-            pass.set_bind_group(2, &self.bind_groups.raymarch_static, &[]);
-            pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
+        //     pass.set_pipeline(&self.pipelines.specular);
+        //     pass.set_bind_group(0, &self.bind_groups.specular_gbuffer, &[]);
+        //     pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
+        //     pass.set_bind_group(2, &self.bind_groups.raymarch_static, &[]);
+        //     pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
-            pass.insert_debug_marker("specular");
-            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
-        }
+        //     pass.insert_debug_marker("specular");
+        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        // }
 
         // lighting resolve pass
         {
