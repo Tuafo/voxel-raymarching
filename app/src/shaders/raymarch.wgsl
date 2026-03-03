@@ -122,7 +122,7 @@ fn trace_scene(pos: vec2<i32>) -> SceneResult {
     let ws_normal = normalize(model.normal_transform * ls_normal);
 
 	let packed = repack_voxel(ws_normal,ray.voxel.metallic , ray.voxel.roughness , ray.hit_mask);
-	// let packed = repack_voxel(ws_normal,0.0, 0.0, ray.hit_mask);
+	// let packed = repack_voxel(ws_normal,1.0, 0.04, ray.hit_mask);
 
 	var res: SceneResult;
 	res.albedo = albedo;

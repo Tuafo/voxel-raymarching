@@ -58,7 +58,7 @@ struct ComputeIn {
     @builtin(workgroup_id) group_id: vec3<u32>,
 }
 
-var<workgroup> horizontal_means: array<array<f32, 24>, 8>;
+var<workgroup> horizontal_means: array<array<u32, 24>, 8>;
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
@@ -70,7 +70,7 @@ fn compute_main(in: ComputeIn) {
         let tile = i32(base + in.thread_id.y) - 2;
 
         let slice = gather_horizontal_means(in.id.x, u32(tile));
-        
+
         for (var y = 0u; y < 4u; y++) {
             horizontal_means[in.thread_id.x][(in.thread_id.y << 2u) + y] = slice[y];
         }
@@ -78,13 +78,27 @@ fn compute_main(in: ComputeIn) {
 
     workgroupBarrier();
 
-    var res = 0.0;
-    for (var i = 0u; i < 17u; i++) {
-        res += horizontal_means[in.thread_id.x][i + in.thread_id.y];
-    }
-    res /= 17.0;
+    var cur = 0.0;
+    var mu = 0.0;
 
-    let cur_color = vec3<f32>(res);
+    for (var i = 0u; i < 17u; i++) {
+        let nbr_mask = horizontal_means[in.thread_id.x][i + in.thread_id.y];
+        let nbr_count = countOneBits(nbr_mask);
+
+        mu += f32(nbr_count) / 17.0;
+
+        if i > 6u && i < 10u {
+            let cur_mask = (nbr_mask >> 7u) & 7u;
+            let cur_count = countOneBits(cur_mask);
+            cur += f32(cur_count) / 3.0;
+        }
+    }
+    cur /= 3.0;
+    mu /= 17.0;
+
+    let sigma = sqrt(mu * (1.0 - mu));
+
+    let cur_color = vec3<f32>(cur);
     var cur_moments: vec2<f32>;
 
     cur_moments.r = cur_color.r;
@@ -103,22 +117,30 @@ fn compute_main(in: ComputeIn) {
     } else {
         history_len = min(32u, acc.history_len + 1u);
 
+        let history_ratio = f32(history_len) / 32.0;
+        let k = mix(0.5, 3.0, history_ratio);
+
+        let acc_min = mu - k * sigma;
+        let acc_max = mu + k * sigma;
+
+        let acc_sample = clamp(acc.color, vec3(acc_min), vec3(acc_max));
+
         // TODO add clamping parameters to customize each alpha
         let alpha_moments = 1.0 / f32(history_len);
         res_moments = mix(acc.moments, cur_moments, alpha_moments);
 
         let alpha_color = 1.0 / f32(history_len);
-        res_color = mix(acc.color, cur_color, alpha_color);
+        res_color = mix(acc_sample, cur_color, alpha_color);
     }
 
-    let variance = max(0.0, res_moments.g - res_moments.r * res_moments.r);
+    // let variance = max(0.0, res_moments.g - res_moments.r * res_moments.r);
+    // textureStore(tex_out_moments, cur_pos, vec4<f32>(res_moments, 0.0, 1.0));
 
-    textureStore(tex_out_illum, cur_pos, vec4<f32>(res_color, variance));
-    textureStore(tex_out_moments, cur_pos, vec4<f32>(res_moments, 0.0, 1.0));
+    textureStore(tex_out_illum, cur_pos, vec4<f32>(res_color, 1.0));
     textureStore(tex_out_history_len, cur_pos, vec4<u32>(history_len, 0, 0, 0));
 }
 
-fn gather_horizontal_means(pos_x: u32, tile_y: u32) -> array<f32, 4> {
+fn gather_horizontal_means(pos_x: u32, tile_y: u32) -> array<u32, 4> {
     let dimensions = textureDimensions(tex_velocity);
 
     let base = vec2(pos_x >> 3u, tile_y);
@@ -129,7 +151,7 @@ fn gather_horizontal_means(pos_x: u32, tile_y: u32) -> array<f32, 4> {
     let mask_c = textureLoad(tex_cur_illum, base).r;
     let mask_r = textureLoad(tex_cur_illum, base + vec2(1, 0)).r;
 
-    var res: array<f32, 4>;
+    var res: array<u32, 4>;
 
     for (var y = 0u; y < 4u; y++) {
         let shift = y << 3u;
@@ -141,8 +163,10 @@ fn gather_horizontal_means(pos_x: u32, tile_y: u32) -> array<f32, 4> {
         let mask = (l << 16u) | (c << 8u) | r;
         let window = (mask >> (7 - x)) & 0x1FFFFu;
 
-        let count = countOneBits(window);
-        res[y] = f32(count) / 17.0;
+        res[y] = window;
+
+        // let count = countOneBits(window);
+        // res[y] = f32(count) / 17.0;
     }
     return res;
 }
@@ -279,10 +303,10 @@ fn is_reprojection_valid(cur: SurfaceData, acc: SurfaceData) -> bool {
         return false;
     }
 
-    // let plane_distance = abs(dot(cur.ws_pos - acc.ws_pos, cur.ws_hit_normal));
-    // if plane_distance > 0.15 {
-    //     return false;
-    // }
+    let plane_distance = abs(dot(cur.ws_pos - acc.ws_pos, cur.ws_hit_normal));
+    if plane_distance > 0.15 {
+        return false;
+    }
 
     if pow(abs(dot(cur.ws_hit_normal, acc.ws_hit_normal)), 2.0) < 1.0 {
         return false;

@@ -436,7 +436,7 @@ impl Renderer {
 
         // see build script
         let scene = MODELS.sponza.load(device, queue).unwrap();
-        let ibl = LIGHTMAPS.sky.load(device, queue).unwrap();
+        let ibl = LIGHTMAPS.partly_cloudy.load(device, queue).unwrap();
 
         let textures = Textures {
             gbuffer_albedo: None,
@@ -1418,16 +1418,18 @@ impl Renderer {
     }
 
     pub fn fixed_update<'a>(&mut self, ctx: &'a mut RendererCtx) {
-        // #[derive(Debug)]
-        // struct DebugStats {
-        //     fps: f64,
-        //     frame: Duration,
-        // }
-        // let stats = DebugStats {
-        //     fps: 1.0 / ctx.ui.debug.frame_avg.as_secs_f64(),
-        //     frame: ctx.ui.debug.frame_avg,
-        // };
-        // eprintln!("{:?}", stats);
+        #[derive(Debug)]
+        struct DebugStats {
+            fps: f64,
+            frame: Duration,
+        }
+        if (ctx.config.print_debug_info) {
+            let stats = DebugStats {
+                fps: 1.0 / ctx.ui.debug.frame_avg.as_secs_f64(),
+                frame: ctx.ui.debug.frame_avg,
+            };
+            eprintln!("{:?}", stats);
+        }
     }
 
     pub fn frame<'a>(&mut self, delta_time: &Duration, ctx: &'a mut RendererCtx) {

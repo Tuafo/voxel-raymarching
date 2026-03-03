@@ -120,6 +120,10 @@ impl DebugWindow {
                 );
                 ui.end_row();
 
+                ui.label("Print Debug Info");
+                ui.checkbox(&mut config.print_debug_info, "");
+                ui.end_row();
+
                 ui.label("FXAA");
                 ui.checkbox(&mut config.fxaa, "");
                 ui.end_row();

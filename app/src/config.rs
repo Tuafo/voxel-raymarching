@@ -14,6 +14,7 @@ pub struct Config {
     pub fxaa: bool,
     pub taa: bool,
     pub max_fps: Option<u32>,
+    pub print_debug_info: bool,
 }
 
 impl Default for Config {
@@ -33,6 +34,7 @@ impl Default for Config {
             fxaa: false,
             taa: true,
             max_fps: None,
+            print_debug_info: false,
         }
     }
 }
