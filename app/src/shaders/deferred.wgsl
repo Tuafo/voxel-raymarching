@@ -88,8 +88,10 @@ fn compute_main(in: ComputeIn) {
     let albedo = albedo_sample.rgb;
     let illumination = textureLoad(tex_illumination, pos, 0);
     let shadow = illumination.r;
-    let ambient = illumination.g;
-    let specular = textureLoad(tex_specular, pos, 0).rgb;
+    // let ambient = illumination.g;
+    let ambient = 1.0;
+    // let specular = textureLoad(tex_specular, pos, 0).rgb;
+    let specular = vec3(0.0);
 
     let ls_pos = ray.ls_origin + ray.direction * depth;
     let ws_pos = (model.transform * vec4(ls_pos, 1.0)).xyz;
@@ -182,7 +184,7 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     let H = normalize(V + L);
     let R = reflect(-V, N);
 
-    const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 1.0;
+    const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 3.0;
 
     var direct: vec3<f32>;
     {
@@ -222,7 +224,7 @@ fn pbr(in: PbrInput) -> vec3<f32> {
 
         indirect = (diffuse + specular) * in.ao;
     }
-    let res = direct + indirect;
+    let res = direct + indirect * 0.25;
     return res;
 }
 

@@ -62,6 +62,7 @@ var<workgroup> results: atomic<u32>;
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(local_invocation_index) index: u32,
+    @builtin(local_invocation_id) thread_id: vec3<u32>,
     @builtin(workgroup_id) group_id: vec3<u32>,
 }
 
@@ -97,7 +98,8 @@ fn compute_main(in: ComputeIn) {
 
     let res = trace_shadow(pos, noise, ls_pos, ls_normal);
     if res {
-        atomicOr(&results, 1u << in.index);
+        let index = (7 - in.thread_id.x) + (in.thread_id.y << 3u);
+        atomicOr(&results, 1u << index);
     }
 
     workgroupBarrier();

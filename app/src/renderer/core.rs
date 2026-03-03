@@ -1571,7 +1571,7 @@ impl Renderer {
             pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("lighting_resolve");
-            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(4), 1);
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
         }
 
         // denoise pass
