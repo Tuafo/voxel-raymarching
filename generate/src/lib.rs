@@ -1,6 +1,7 @@
 pub mod gltf;
 mod lightmaps;
 mod models;
+pub mod models_new;
 
 pub use lightmaps::*;
 pub use models::*;
