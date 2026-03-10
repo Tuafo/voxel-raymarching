@@ -1,12 +1,13 @@
-@group(0) @binding(0) var<storage, read_write> chunks: array<u32>;
-@group(0) @binding(1) var<storage, read_write> voxels: array<u32>;
-@group(0) @binding(2) var<storage, read_write> child_index_map: array<u32>;
-// @group(0) @binding(2) var tex_child_index_map: texture_storage_3d<r32uint, read_write>;
-// @group(0) @binding(1) var voxels: texture_storage_3d<r32uint, write>;
+struct Chunk {
+    // brick_index: u32,
+    mask: array<u32, 16>,
+}
+@group(0) @binding(0) var<storage, read_write> chunk_indices: array<u32>;
+@group(0) @binding(1) var<storage, read_write> chunks: array<Chunk>;
+@group(0) @binding(2) var voxels: texture_storage_3d<r32uint, write>;
 
 struct Allocator {
-    chunk_count: atomic<u32>, // the total number of index chunks allocated
-    leaf_count: atomic<u32>, // the total number of leaf chunks allocated
+    chunk_count: atomic<u32>, // the total number of chunks allocated
     voxel_count: atomic<u32>, // total number of voxels in the scene
 }
 struct Palette {
@@ -17,27 +18,24 @@ struct Palette {
 @group(1) @binding(2) var<uniform> palette: Palette;
 
 struct ComputeIn {
-    @builtin(global_invocation_id) pos: vec3<u32>,
-    @builtin(num_workgroups) num_workgroups: vec3<u32>,
-    @builtin(workgroup_id) workgroup_pos: vec3<u32>,
-    @builtin(local_invocation_id) local_pos: vec3<u32>,
-    @builtin(local_invocation_index) local_index: u32,
+    @builtin(workgroup_id) chunk_pos: vec3<u32>,
+    @builtin(num_workgroups) size_chunks: vec3<u32>,
+    @builtin(local_invocation_index) brick_index: u32,
+    @builtin(local_invocation_id) brick_pos: vec3<u32>,
+    @builtin(global_invocation_id) voxel_pos: vec3<u32>,
 }
 
-struct Shared {
-    mask: array<atomic<u32>, 2>,
+struct BrickGroup {
     is_empty: bool,
-    chunk_index: u32,
+    base_pos: vec3<u32>,
+    data: array<u32, 512>,
 }
-var<workgroup> group: Shared;
+var<workgroup> brick: BrickGroup;
 
-const LEAF_CHUNK_WORDS: u32 = 64u;
-const INDEX_ENTRY_WORDS: u32 = 3u;
-const INDEX_CHUNK_WORDS: u32 = 64u * INDEX_ENTRY_WORDS;
+@compute @workgroup_size(8, 8, 8)
+fn compute_main(in: ComputeIn) {
 
-@compute @workgroup_size(4, 4, 4)
-fn compute_leaf(in: ComputeIn) {
-    let raw = textureLoad(raw_voxels, vec3<i32>(in.pos)).rgb;
+    let raw = textureLoad(raw_voxels, vec3<i32>(in.voxel_pos)).rgb;
     let albedo_packed = raw.r;
     let normal_metallic_roughness = raw.g;
     let material_id = raw.b;
@@ -63,172 +61,58 @@ fn compute_leaf(in: ComputeIn) {
                 min_distance = d;
             }
         }
-
-        atomicOr(&group.mask[in.local_index >> 5u], 1u << (in.local_index & 31u));
     }
 
     let packed = normal_metallic_roughness | palette_index;
 
+    brick.data[in.brick_index] = packed;
+
     workgroupBarrier();
 
-    if in.local_index == 0u {
-        let mask = array<u32, 2>(
-            atomicLoad(&group.mask[0]),
-            atomicLoad(&group.mask[1]),
-        );
-        
-        group.is_empty = (mask[0] == 0u) && (mask[1] == 0u);
-        if !group.is_empty {
-            group.chunk_index = atomicAdd(&alloc.leaf_count, 1u);
+    if in.brick_index == 0u {
+        // build mask here
+        var brick_voxel_count = 0u;
+        var mask = array<u32, 16>();
+        for (var i = 0u; i < 512u; i++) {
+            if brick.data[i] != 0u {
+                brick_voxel_count += 1u;
+                mask[i >> 5u] |= 1u << (i & 31u);
+            }
         }
+        if brick_voxel_count == 0u {
+            brick.is_empty = true;
+        } else {
+            let chunk_index = atomicAdd(&alloc.chunk_count, 1u);
+            // let brick_index = atomicAdd(&alloc.brick_count, 1u);
+            atomicAdd(&alloc.voxel_count, brick_voxel_count);
 
-        // used by next pass
-        let parent_index = in.workgroup_pos.x
-        + in.workgroup_pos.y * in.num_workgroups.x
-        + in.workgroup_pos.z * in.num_workgroups.x * in.num_workgroups.y;
-        let parent_base = parent_index * 3u;
+            // pointer to the chunk
+            chunk_indices[in.chunk_pos.z * in.size_chunks.y * in.size_chunks.x + in.chunk_pos.y * in.size_chunks.x + in.chunk_pos.x] = chunk_index + 1u;
 
-        child_index_map[parent_base + 0u] = (group.chunk_index << 1u) | 1u; // lowest bit is 1, as it's a leaf chunk
-        child_index_map[parent_base + 1u] = mask[0];
-        child_index_map[parent_base + 2u] = mask[1];
-    }
+            // build chunk
+            // chunks[chunk_index].brick_index = brick_index + 1u;
+            chunks[chunk_index].mask = mask;
 
-    workgroupBarrier();
-
-    if !group.is_empty {
-        let chunk_base = group.chunk_index * LEAF_CHUNK_WORDS;
-        voxels[chunk_base + in.local_index] = packed;
-    }
-}
-
-@compute @workgroup_size(4, 4, 4)
-fn compute_index_base(in: ComputeIn) {
-    let child_offset = in.pos.x
-    + in.pos.y * (in.num_workgroups.x << 2u)
-    + in.pos.z * (in.num_workgroups.x << 2u) * (in.num_workgroups.y << 2u); 
-    let child_base = child_offset * 3u;
-
-    let child_index = child_index_map[child_base + 0u];
-    let child_mask = array<u32, 2>(
-        child_index_map[child_base + 1u],
-        child_index_map[child_base + 2u],
-    );
-
-    if child_mask[0] == 0u && child_mask[1] == 0u {
-        atomicOr(&group.mask[in.local_index >> 5u], 1u << (in.local_index & 31u));
-    }
-
-    workgroupBarrier();
-
-    if in.local_index == 0u {
-        let mask = array<u32, 2>(
-            atomicLoad(&group.mask[0]),
-            atomicLoad(&group.mask[1]),
-        );
-        
-        group.is_empty = (mask[0] == 0u) && (mask[1] == 0u);
-        if !group.is_empty {
-            group.chunk_index = atomicAdd(&alloc.chunk_count, 1u);
+            var size_bricks = textureDimensions(voxels);
+                size_bricks.x = (size_bricks.x + 7u) >> 3u;
+                size_bricks.y = (size_bricks.y + 7u) >> 3u;
+                size_bricks.z = (size_bricks.z + 7u) >> 3u;
+            brick.base_pos = vec3<u32>(
+                (chunk_index % size_bricks.x) << 3u,
+                ((chunk_index / size_bricks.x) % size_bricks.y) << 3u,
+                (chunk_index / (size_bricks.x * size_bricks.y)) << 3u
+            );
+            brick.is_empty = false;
         }
-
-        // used by next pass
-        let parent_index = in.workgroup_pos.x
-        + in.workgroup_pos.y * in.num_workgroups.x
-        + in.workgroup_pos.z * in.num_workgroups.x * in.num_workgroups.y;
-        let parent_base = parent_index * 3u;
-
-        child_index_map[parent_base + 0u] = (group.chunk_index << 1u); // lowest bit is 0, as it's not a leaf chunk
-        child_index_map[parent_base + 1u] = mask[0];
-        child_index_map[parent_base + 2u] = mask[1];
     }
 
     workgroupBarrier();
 
-    if !group.is_empty {
-        let chunk_base = (group.chunk_index - 1u) * INDEX_CHUNK_WORDS;
-        let entry_base = chunk_base + in.local_index * INDEX_ENTRY_WORDS;
-        chunks[entry_base + 0u] = child_index;
-        chunks[entry_base + 1u] = child_mask[0];
-        chunks[entry_base + 2u] = child_mask[1];
+    if brick.is_empty {
+        return;
     }
+    textureStore(voxels, vec3<i32>(brick.base_pos + in.brick_pos), vec4<u32>(packed, 0u, 0u, 0u));
 }
-
-// fn update_index(in: ComputeIn) {
-//     var brick_voxel_count = 0u;
-//     var mask: array<u32, 2>;
-//     for (var i = 0u; i < 64u; i++) {
-//         if brick.data[i] != 0u {
-//             brick_voxel_count += 1u;
-//             mask[i >> 5u] |= 1u << (i & 31u);
-//         }
-//     }
-//     if brick_voxel_count == 0u {
-//         brick.is_empty = true;
-//         return;
-//     } 
-
-//     atomicAdd(&alloc.voxel_count, brick_voxel_count);
-
-//     var chunk_index = 0u;
-
-//     for (var d = CHUNK_LEVELS; d > 0u; d--) {
-//         let base = CHUNK_WORDS * chunk_index;
-        
-//         if d == 1u {
-//             // bottom index level, allocate new and set mask directly
-//             brick.base_index = atomicAdd(&alloc.leaf_count, 1u);
-
-//             chunks[base] = mask[0];
-//             chunks[base + 1u] = mask[1];
-//             chunks[base + 2u] = brick.base_index;
-//         } else {
-//             let shift = (d - 2u) << 1u;
-//             let offset_pos = vec3<u32>(
-//                 (pos.x >> shift) & 3u,
-//                 (pos.y >> shift) & 3u,
-//                 (pos.z >> shift) & 3u,
-//             );
-//             let offset = (offset_pos.z << 4u) | (offset_pos.y << 2u) | offset_pos.x;
-
-//         }
-
-
-//         chunks[base + (offset >> 5u)] |= 1u << (offset & 31u);
-
-//         if d == 0u {
-//             // next is leaf, set mask & index
-//             chunks
-//         }
-
-//         chunk_index = chunks[base + 2u];
-        
-//         if d > 0u && chunk_index == 0u {
-//             // allocate next child
-//             chunk_index = atomicAdd(&alloc.chunk_count, 1u);
-//             chunks[base + 2u] = chunk_index;
-//         }
-
-//         chunks[CHUNK_WORDS * chunk_index]
-//     }
-
-//     // pointer to the chunk
-//     chunk_indices[in.chunk_pos.z * in.size_chunks.y * in.size_chunks.x + in.chunk_pos.y * in.size_chunks.x + in.chunk_pos.x] = chunk_index + 1u;
-
-//     // build chunk
-//     // chunks[chunk_index].brick_index = brick_index + 1u;
-//     chunks[chunk_index].mask = mask;
-
-//     var size_bricks = textureDimensions(voxels);
-//         size_bricks.x = (size_bricks.x + 7u) >> 3u;
-//         size_bricks.y = (size_bricks.y + 7u) >> 3u;
-//         size_bricks.z = (size_bricks.z + 7u) >> 3u;
-//     brick.base_pos = vec3<u32>(
-//         (chunk_index % size_bricks.x) << 3u,
-//         ((chunk_index / size_bricks.x) % size_bricks.y) << 3u,
-//         (chunk_index / (size_bricks.x * size_bricks.y)) << 3u
-//     );
-//     brick.is_empty = false;
-// }
 
 fn srgb_to_linear(srgb: vec3<f32>) -> vec3<f32> {
     return pow(srgb, vec3(2.2));

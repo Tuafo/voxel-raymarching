@@ -70,11 +70,11 @@ pub struct Renderer {
 
 struct Pipelines {
     raymarch: wgpu::ComputePipeline,
-    shadow: wgpu::ComputePipeline,
-    ambient: wgpu::ComputePipeline,
-    specular: wgpu::ComputePipeline,
+    // shadow: wgpu::ComputePipeline,
+    // ambient: wgpu::ComputePipeline,
+    // specular: wgpu::ComputePipeline,
     lighting_resolve: wgpu::ComputePipeline,
-    atrous: wgpu::ComputePipeline,
+    // atrous: wgpu::ComputePipeline,
     deferred: wgpu::ComputePipeline,
     taa: wgpu::ComputePipeline,
     fx: wgpu::RenderPipeline,
@@ -110,7 +110,7 @@ struct BindGroups {
     shadow_gbuffer: Option<wgpu::BindGroup>,
     ambient_gbuffer: Option<wgpu::BindGroup>,
     ambient_swap: Option<SwapchainBindGroup>,
-    ambient_static: wgpu::BindGroup,
+    // ambient_static: wgpu::BindGroup,
     specular_gbuffer: Option<wgpu::BindGroup>,
     lighting_resolve_gbuffer: Option<wgpu::BindGroup>,
     lighting_resolve_swap: Option<SwapchainBindGroup>,
@@ -140,7 +140,7 @@ struct Textures {
     gbuffer_specular: Option<wgpu::Texture>,
     deferred_output: Option<wgpu::Texture>,
     out_color: Option<SwapchainTexture>,
-    voxel_brickmap: wgpu::Texture,
+    leaf_chunks: wgpu::Texture,
     noise_cos_hemisphere_gauss: wgpu::Texture,
     noise_uniform_gauss: wgpu::Texture,
 }
@@ -153,8 +153,7 @@ struct Samplers {
 struct Buffers {
     voxel_scene_metadata: wgpu::Buffer,
     voxel_palette: wgpu::Buffer,
-    voxel_chunk_indices: wgpu::Buffer,
-    voxel_chunks: wgpu::Buffer,
+    index_chunks: wgpu::Buffer,
     frame_metadata: wgpu::Buffer,
     environment: wgpu::Buffer,
     model: wgpu::Buffer,
@@ -197,7 +196,6 @@ impl Renderer {
                 (
                     uniform_buffer(),
                     uniform_buffer(),
-                    storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     storage_texture().r32uint().dimension_3d().read_only(),
                     texture().unfilterable_float().dimension_3d(),
@@ -350,28 +348,28 @@ impl Renderer {
                     &bg_layouts.raymarch_static,
                     &bg_layouts.per_frame_shared,
                 ]),
-            shadow: device.compute_pipeline("shadow", &shaders.shadow).layout(&[
-                &bg_layouts.shadow_gbuffer,
-                &bg_layouts.ambient_swap,
-                &bg_layouts.ambient_static,
-                &bg_layouts.per_frame_shared,
-            ]),
-            ambient: device
-                .compute_pipeline("ambient", &shaders.ambient)
-                .layout(&[
-                    &bg_layouts.ambient_gbuffer,
-                    &bg_layouts.ambient_swap,
-                    &bg_layouts.ambient_static,
-                    &bg_layouts.per_frame_shared,
-                ]),
-            specular: device
-                .compute_pipeline("specular", &shaders.specular)
-                .layout(&[
-                    &bg_layouts.specular_gbuffer,
-                    &bg_layouts.ambient_swap,
-                    &bg_layouts.raymarch_static,
-                    &bg_layouts.per_frame_shared,
-                ]),
+            // shadow: device.compute_pipeline("shadow", &shaders.shadow).layout(&[
+            //     &bg_layouts.shadow_gbuffer,
+            //     &bg_layouts.ambient_swap,
+            //     &bg_layouts.ambient_static,
+            //     &bg_layouts.per_frame_shared,
+            // ]),
+            // ambient: device
+            //     .compute_pipeline("ambient", &shaders.ambient)
+            //     .layout(&[
+            //         &bg_layouts.ambient_gbuffer,
+            //         &bg_layouts.ambient_swap,
+            //         &bg_layouts.ambient_static,
+            //         &bg_layouts.per_frame_shared,
+            //     ]),
+            // specular: device
+            //     .compute_pipeline("specular", &shaders.specular)
+            //     .layout(&[
+            //         &bg_layouts.specular_gbuffer,
+            //         &bg_layouts.ambient_swap,
+            //         &bg_layouts.raymarch_static,
+            //         &bg_layouts.per_frame_shared,
+            //     ]),
             lighting_resolve: device
                 .compute_pipeline("lighting_resolve", &shaders.lighting_resolve)
                 .layout(&[
@@ -379,11 +377,11 @@ impl Renderer {
                     &bg_layouts.lighting_resolve_swap,
                     &bg_layouts.per_frame_shared,
                 ]),
-            atrous: device.compute_pipeline("atrous", &shaders.atrous).layout(&[
-                &bg_layouts.atrous_per_pass,
-                &bg_layouts.atrous_swap,
-                &bg_layouts.per_frame_shared,
-            ]),
+            // atrous: device.compute_pipeline("atrous", &shaders.atrous).layout(&[
+            //     &bg_layouts.atrous_per_pass,
+            //     &bg_layouts.atrous_swap,
+            //     &bg_layouts.per_frame_shared,
+            // ]),
             deferred: device
                 .compute_pipeline("deferred", &shaders.deferred)
                 .layout(&[
@@ -452,7 +450,7 @@ impl Renderer {
             gbuffer_specular: None,
             deferred_output: None,
             out_color: None,
-            voxel_brickmap: scene.data.tex_brickmap,
+            leaf_chunks: scene.data.tex_leaf_chunks,
             noise_cos_hemisphere_gauss: noise::noise_cos_hemisphere_gauss(device, queue).unwrap(),
             noise_uniform_gauss: noise::noise_uniform_gauss(device, queue).unwrap(),
         };
@@ -485,21 +483,22 @@ impl Renderer {
                 #[repr(C)]
                 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
                 struct BufferVoxelSceneMetadata {
-                    size_chunks: glam::UVec3,
-                    _pad: u32,
+                    bounding_size: u32,
+                    index_levels: u32,
+                    index_chunk_count: u32,
                 }
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("voxel_scene_metadata"),
                     contents: bytemuck::cast_slice(&[BufferVoxelSceneMetadata {
-                        size_chunks: scene.meta.size_chunks,
-                        _pad: 0,
+                        bounding_size: scene.meta.bounding_size,
+                        index_levels: scene.meta.index_levels,
+                        index_chunk_count: scene.meta.allocated_index_chunks,
                     }]),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 })
             },
             voxel_palette: scene.data.buffer_palette,
-            voxel_chunk_indices: scene.data.buffer_chunk_indices,
-            voxel_chunks: scene.data.buffer_chunks,
+            index_chunks: scene.data.buffer_index_chunks,
 
             environment: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("environment"),
@@ -555,32 +554,22 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: buffers.voxel_chunk_indices.as_entire_binding(),
+                        resource: buffers.index_chunks.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &buffers.voxel_chunks,
-                            offset: 0,
-                            size: std::num::NonZeroU64::new(
-                                (scene.meta.allocated_chunks * 64) as u64,
-                            ),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
                         resource: wgpu::BindingResource::TextureView(
                             &textures
-                                .voxel_brickmap
+                                .leaf_chunks
                                 .create_view(&wgpu::TextureViewDescriptor {
-                                    label: Some("voxel_brickmap"),
+                                    label: Some("leaf_chunks"),
                                     usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
                                     ..Default::default()
                                 }),
                         ),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 5,
+                        binding: 4,
                         resource: wgpu::BindingResource::TextureView(
                             &textures.noise_cos_hemisphere_gauss.create_view(
                                 &wgpu::TextureViewDescriptor {
@@ -590,7 +579,7 @@ impl Renderer {
                         ),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 6,
+                        binding: 5,
                         resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
                     },
                 ],
@@ -599,48 +588,48 @@ impl Renderer {
             shadow_gbuffer: None,
             ambient_gbuffer: None,
             ambient_swap: None,
-            ambient_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("ambient_static"),
-                layout: &bg_layouts.ambient_static,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.voxel_palette.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffers.voxel_chunk_indices.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &buffers.voxel_chunks,
-                            offset: 0,
-                            size: std::num::NonZeroU64::new(
-                                (scene.meta.allocated_chunks * 64) as u64,
-                            ),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(
-                            &textures.noise_cos_hemisphere_gauss.create_view(
-                                &wgpu::TextureViewDescriptor {
-                                    ..Default::default()
-                                },
-                            ),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
-                    },
-                ],
-            }),
+            // ambient_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
+            //     label: Some("ambient_static"),
+            //     layout: &bg_layouts.ambient_static,
+            //     entries: &[
+            //         wgpu::BindGroupEntry {
+            //             binding: 0,
+            //             resource: buffers.voxel_scene_metadata.as_entire_binding(),
+            //         },
+            //         wgpu::BindGroupEntry {
+            //             binding: 1,
+            //             resource: buffers.voxel_palette.as_entire_binding(),
+            //         },
+            //         wgpu::BindGroupEntry {
+            //             binding: 2,
+            //             resource: buffers.index_chunks.as_entire_binding(),
+            //         },
+            //         wgpu::BindGroupEntry {
+            //             binding: 3,
+            //             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            //                 buffer: &buffers.voxel_chunks,
+            //                 offset: 0,
+            //                 size: std::num::NonZeroU64::new(
+            //                     (scene.meta.allocated_chunks * 64) as u64,
+            //                 ),
+            //             }),
+            //         },
+            //         wgpu::BindGroupEntry {
+            //             binding: 4,
+            //             resource: wgpu::BindingResource::TextureView(
+            //                 &textures.noise_cos_hemisphere_gauss.create_view(
+            //                     &wgpu::TextureViewDescriptor {
+            //                         ..Default::default()
+            //                     },
+            //                 ),
+            //             ),
+            //         },
+            //         wgpu::BindGroupEntry {
+            //             binding: 5,
+            //             resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
+            //         },
+            //     ],
+            // }),
             specular_gbuffer: None,
             lighting_resolve_gbuffer: None,
             lighting_resolve_swap: None,
@@ -733,7 +722,7 @@ impl Renderer {
         config.sun_azimuth = -2.5;
         config.sun_altitude = 1.3;
         ui.debug.voxel_count = scene.meta.voxel_count;
-        ui.debug.scene_size = scene.meta.size_voxels.as_ivec3();
+        ui.debug.scene_size = glam::IVec3::splat(scene.meta.bounding_size as i32);
 
         let mut _self = Self {
             pipelines,
@@ -1517,18 +1506,18 @@ impl Renderer {
         }
 
         // shadow pass
-        {
-            let mut pass = encoder.begin_compute_pass_timed("Shadow", &mut self.timing);
+        // {
+        //     let mut pass = encoder.begin_compute_pass_timed("Shadow", &mut self.timing);
 
-            pass.set_pipeline(&self.pipelines.shadow);
-            pass.set_bind_group(0, &self.bind_groups.shadow_gbuffer, &[]);
-            pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
-            pass.set_bind_group(2, &self.bind_groups.ambient_static, &[]);
-            pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
+        //     pass.set_pipeline(&self.pipelines.shadow);
+        //     pass.set_bind_group(0, &self.bind_groups.shadow_gbuffer, &[]);
+        //     pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
+        //     pass.set_bind_group(2, &self.bind_groups.ambient_static, &[]);
+        //     pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
-            pass.insert_debug_marker("shadow");
-            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(4), 1);
-        }
+        //     pass.insert_debug_marker("shadow");
+        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(4), 1);
+        // }
 
         // // ambient pass
         // {

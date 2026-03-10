@@ -27,6 +27,42 @@ fn main() -> Result<()> {
 
     let (device, queue) = init_device().context("failed to initialize GPU context")?;
 
+    // {
+    //     let sources = walk_asset_sources(Path::new("app/assets/models"), "glb")
+    //         .context("error while retrieving model sources")?;
+
+    //     eprintln!("Generating models");
+    //     for src in &sources {
+    //         eprintln!("-    {} {:?}", src.name, src.path);
+    //     }
+
+    //     for src in sources {
+    //         let glb = fs::File::open(&src.path)?;
+    //         let mut reader = io::BufReader::new(&glb);
+    //         let data = generate::models_t64::voxelize(
+    //             &mut reader,
+    //             &device,
+    //             &queue,
+    //             Some(src.name.clone()),
+    //         )?;
+    //         // let data = data.serialize(&device, &queue)?;
+
+    //         // let path = out_dir.join(format!("{}.{}", &src.name, MODEL_FILE_EXT));
+    //         // let file = fs::File::create(&path)?;
+    //         // let mut enc = ZlibEncoder::new(file, flate2::Compression::best());
+    //         // enc.write_all(&data)?;
+    //         // let mut res = enc.finish()?;
+    //         // let length = res
+    //         //     .stream_position()
+    //         //     .map(|len| len as f64 / (1024.0 * 1024.0))?;
+
+    //         // eprintln!("Completed {} ({:.2} MB)", src.name, length);
+    //     }
+    //     // voxelize_models(&device, &queue, &sources, Path::new("app/assets/generated"))
+    //     //     .context("error voxelizing models")?;
+    // }
+    // return Ok(());
+
     if generate_all || args.lightmaps {
         let sources = walk_asset_sources(Path::new("app/assets/lightmaps"), "hdr")
             .context("error while retrieving lightmap sources")?;
