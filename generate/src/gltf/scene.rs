@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::gltf::schema;
 use anyhow::{Context, Result, bail, ensure};
+use image::GenericImageView;
 
 /// Parsed scene data
 #[derive(Debug)]
@@ -223,7 +224,11 @@ impl TextureExt for image::RgbaImage {
             _ => image::load_from_memory(src),
         }?;
 
-        Ok(loaded.to_rgba8())
+        let (w, h) = loaded.dimensions();
+
+        Ok(loaded
+            .resize(w / 2, h / 2, image::imageops::FilterType::Nearest)
+            .to_rgba8())
     }
 }
 

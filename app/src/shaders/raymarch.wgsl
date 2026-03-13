@@ -122,6 +122,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let velocity = cur_uv - prev_uv;
 
 	let albedo = palette_color(ray.voxel.palette_index);
+	// let albedo = vec3(f32(ray.voxel.palette_index) / 255.0);
 
     let ls_normal = align_per_voxel_normal(ray.hit_normal, ray.voxel.normal);
 	// let ls_normal = ray.hit_normal;
@@ -136,30 +137,6 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
 	res.depth = depth;
 	res.velocity = velocity;
 	return res;
-}
-
-fn blue_noise(pos: vec2<i32>) -> vec3<f32> {
-	const FRACT_PHI: f32 = 0.61803398875;
-	const FRACT_SQRT_2: f32 = 0.41421356237;
-	const OFFSET: vec2<f32> = vec2<f32>(FRACT_PHI, FRACT_SQRT_2);
-
-	let frame_offset_seed = (frame.frame_id >> 5u) & 0xffu;
-	let frame_offset = vec2<u32>(OFFSET * 128.0 * f32(frame_offset_seed));
-
-	let id = vec2<u32>(pos) + frame_offset;
-	let sample_pos = vec3<u32>(
-		id.x & 0x7fu,
-		id.y & 0x7fu,
-		frame.frame_id & 0x1fu,
-	);
-	let noise = textureLoad(tex_noise, sample_pos, 0).rgb;
-	return noise;
-}
-
-fn rand_hemisphere_direction(noise: vec2<f32>) -> vec3<f32> {
-	let xy = noise * 2.0 - 1.0;
-	let z = sqrt(max(0.0, 1.0 - dot(xy, xy)));
-	return vec3(xy, z);
 }
 
 struct Ray {
@@ -183,25 +160,31 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 	if !ray.in_bounds {
 		return RaymarchResult();
 	}
-
-	let scale = 1.0 / f32(scene.bounding_size);
-	let origin = ray.ls_origin * scale + (ray.t_start * ray.direction) * scale + 1.0;
 	
 	var dir = ray.direction;
-	let inv_dir = sign(dir) / max(vec3(1e-7), abs(dir));
+	// let inv_dir = sign(dir) / max(vec3(1e-7), abs(dir));
+	let inv_dir = 1.0 / -abs(dir);
+
+	let scale = 1.0 / f32(scene.bounding_size);
+	var origin = ray.ls_origin * scale + (ray.t_start * ray.direction) * scale + 1.0;
+	origin = mirrored_pos(origin, dir);
 
 	var pos = clamp(origin, vec3(1.0), vec3(1.9999999));
+	
+	var mirror_mask = 0u;
+	mirror_mask |= select(0u, 3u, dir.x > 0.0) << 0u;
+	mirror_mask |= select(0u, 3u, dir.y > 0.0) << 4u;
+	mirror_mask |= select(0u, 3u, dir.z > 0.0) << 2u;
 
-	// let stack = &shared_stack[local_index];
 	var scale_exp = 21u;
+	var side_distance: vec3<f32>;
 
 	var ci = 0u;
 	var chunk = index_chunks[ci];
 
-	var side_distance: vec3<f32>;
-
-	for (var i = 0u; i < 256; i++) {
-		var child_offset = chunk_offset(pos, scale_exp);
+	var i = 0u;
+	for (i = 0u; i < 256; i++) {
+		var child_offset = chunk_offset(pos, scale_exp) ^ mirror_mask;
 
 		while (chunk_contains_child(chunk.mask, child_offset) && !chunk_is_leaf(chunk.child_index) && scale_exp >= 2u) {
 			stack[local_index][scale_exp >> 1u] = ci;
@@ -209,9 +192,13 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 			chunk = index_chunks[ci];
 
 			scale_exp -= 2u;
-			child_offset = chunk_offset(pos, scale_exp);
+			child_offset = chunk_offset(pos, scale_exp) ^ mirror_mask;
 		}
+
+		// if we reached a leaf, we're done
 		if chunk_contains_child(chunk.mask, child_offset) && chunk_is_leaf(chunk.child_index) {
+			pos = mirrored_pos_unchecked(pos, dir);
+
 			let leaf_index = mask_packed_offset(chunk.mask, child_offset);
 			
 			let packed = leaf_chunks[(chunk.child_index >> 1u) + leaf_index];
@@ -228,6 +215,8 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 			res.depth = t_total;
 			res.local_pos = ray.ls_origin + dir * t_total;
 			res.hit_mask = mask; 
+
+			// res.voxel.palette_index = i;
 			return res;
 		}
 
@@ -237,44 +226,25 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 		if ((chunk.mask[snapped_idx >> 5u] >> (snapped_idx & 31u)) & 0x00330033u) == 0u {
 			adv_scale_exp++;
 		}
+		let edge_pos = floor_scale(pos, adv_scale_exp);
 
-		pos = floor_scale(pos, adv_scale_exp);
-		let prev_pos = pos;
-
-		let scale = bitcast<f32>((adv_scale_exp + 104) << 23);
-		side_distance = (step(vec3<f32>(0.0), dir) * scale + (pos - origin)) * inv_dir;
-
+		side_distance = (edge_pos - origin) * inv_dir;
 		let t_max = min(min(side_distance.x, side_distance.y), side_distance.z);
 
-		// emulate copysign(scale, dir)
-		let scale_mag = bitcast<u32>(scale) & 0x7FFFFFFFu;
-		let dir_signs = bitcast<vec3<u32>>(dir) & vec3<u32>(0x80000000u);
-		let copysign_scale = bitcast<vec3<f32>>(dir_signs | vec3<u32>(scale_mag));
+		let max_sibling_bounds: vec3<i32> = bitcast<vec3<i32>>(edge_pos) + select(vec3(i32(1u << adv_scale_exp) - 1), vec3(-1), side_distance == vec3(t_max));
+		pos = min(origin - abs(dir) * t_max, bitcast<vec3<f32>>(max_sibling_bounds));
 
-		let tmax_mask = vec3<f32>(t_max) == side_distance;
-		let siblPos0 = select(pos, pos + copysign_scale, tmax_mask);
-
-		let bounds_offset = vec3<i32>(i32((1u << adv_scale_exp) - 1u));
-		let siblPos1 = bitcast<vec3<f32>>(bitcast<vec3<i32>>(siblPos0) + bounds_offset);
-
-		pos = clamp(origin + (dir * t_max), siblPos0, siblPos1);
-
-		let diffPos = bitcast<vec3<u32>>(pos) ^ bitcast<vec3<u32>>(prev_pos);
-		let combined_diff = diffPos.x | diffPos.y | diffPos.z;
-
-		var diffExp: u32 = firstLeadingBit(combined_diff);
-
-		if (diffExp & 1u) == 0u {
-			diffExp--;
-		}
+		// carry bit tells us which node to go up to
+		let diff_pos: vec3<u32> = bitcast<vec3<u32>>(pos) ^ bitcast<vec3<u32>>(edge_pos);
+		let diff_exp = firstLeadingBit((diff_pos.x | diff_pos.y | diff_pos.z) & 0xFFAAAAAAu);
 
 		// ascend
-		if diffExp > scale_exp {
-			if diffExp > 21 {
+		if i32(diff_exp) > i32(scale_exp) {
+			scale_exp = diff_exp;
+			if diff_exp > 21 {
 				break;
 			}
 			
-			scale_exp = u32(diffExp);
 			ci = stack[local_index][scale_exp >> 1u];
 			chunk = index_chunks[ci];
 		}
@@ -282,6 +252,9 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 
 	return RaymarchResult();
 }
+
+/// ------------------------------------------------------
+/// ---------------- tree traversal utils ----------------
 
 fn mirrored_pos(pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
 	var mirrored: vec3<f32> = bitcast<vec3<f32>>(bitcast<vec3<u32>>(pos) ^ vec3(0x7FFFFFu));

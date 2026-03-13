@@ -29,42 +29,6 @@ fn main() -> Result<()> {
 
     let (device, queue) = init_device().context("failed to initialize GPU context")?;
 
-    // {
-    //     let sources = walk_asset_sources(Path::new("app/assets/models"), "glb")
-    //         .context("error while retrieving model sources")?;
-
-    //     eprintln!("Generating models");
-    //     for src in &sources {
-    //         eprintln!("-    {} {:?}", src.name, src.path);
-    //     }
-
-    //     for src in sources {
-    //         let glb = fs::File::open(&src.path)?;
-    //         let mut reader = io::BufReader::new(&glb);
-    //         let data = generate::models_t64::voxelize(
-    //             &mut reader,
-    //             &device,
-    //             &queue,
-    //             Some(src.name.clone()),
-    //         )?;
-    //         // let data = data.serialize(&device, &queue)?;
-
-    //         // let path = out_dir.join(format!("{}.{}", &src.name, MODEL_FILE_EXT));
-    //         // let file = fs::File::create(&path)?;
-    //         // let mut enc = ZlibEncoder::new(file, flate2::Compression::best());
-    //         // enc.write_all(&data)?;
-    //         // let mut res = enc.finish()?;
-    //         // let length = res
-    //         //     .stream_position()
-    //         //     .map(|len| len as f64 / (1024.0 * 1024.0))?;
-
-    //         // eprintln!("Completed {} ({:.2} MB)", src.name, length);
-    //     }
-    //     // voxelize_models(&device, &queue, &sources, Path::new("app/assets/generated"))
-    //     //     .context("error voxelizing models")?;
-    // }
-    // return Ok(());
-
     if generate_all || args.lightmaps {
         let sources = walk_asset_sources(Path::new("app/assets/lightmaps"), "hdr")
             .context("error while retrieving lightmap sources")?;
@@ -87,8 +51,10 @@ fn main() -> Result<()> {
             eprintln!("-    {} {:?}", src.name, src.path);
         }
 
-        voxelize_models(&device, &queue, &sources, Path::new("app/assets/generated"))
-            .context("error voxelizing models")?;
+        for src in &sources {
+            voxelize_model(&device, &queue, src, Path::new("app/assets/generated"))
+                .context(format!("error voxelizing model {}", src.name))?;
+        }
     }
 
     Ok(())
@@ -103,11 +69,13 @@ fn init_device() -> Result<(wgpu::Device, wgpu::Queue)> {
     features |= wgpu::Features::FLOAT32_FILTERABLE;
     features |= wgpu::Features::TEXTURE_BINDING_ARRAY;
     features |= wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+    features |= wgpu::Features::CLEAR_TEXTURE;
+    features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
 
     let mut limits = wgpu::Limits::default();
-    limits.max_sampled_textures_per_shader_stage = 260;
-    limits.max_buffer_size = 2 * 1024 * 1024 * 1024;
-    limits.max_binding_array_elements_per_shader_stage = 260;
+    limits.max_sampled_textures_per_shader_stage = 460;
+    limits.max_buffer_size = MAX_STORAGE_BUFFER_BINDING_SIZE as u64;
+    limits.max_binding_array_elements_per_shader_stage = 460;
     limits.max_storage_textures_per_shader_stage = 6;
     limits.max_compute_invocations_per_workgroup = 512;
     limits.max_storage_buffer_binding_size = MAX_STORAGE_BUFFER_BINDING_SIZE;
@@ -207,29 +175,32 @@ fn create_lighting(
     Ok(())
 }
 
-fn voxelize_models(
+fn voxelize_model(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    sources: &[AssetSource],
+    src: &AssetSource,
     out_dir: &Path,
 ) -> Result<()> {
-    for src in sources {
-        let glb = fs::File::open(&src.path)?;
-        let mut reader = io::BufReader::new(&glb);
-        let data = voxelize(&mut reader, &device, &queue, Some(src.name.clone()))?;
-        let data = data.serialize(&device, &queue)?;
+    let glb = fs::File::open(&src.path)?;
+    let mut reader = io::BufReader::new(&glb);
+    let data = voxelize(&mut reader, &device, &queue, Some(src.name.clone()))
+        .context("failed to voxelize model")?;
+    let data = data
+        .serialize(&device, &queue)
+        .context("failed to serialize voxel tree")?;
 
-        let path = out_dir.join(format!("{}.{}", &src.name, MODEL_FILE_EXT));
-        let file = fs::File::create(&path)?;
-        let mut enc = ZlibEncoder::new(file, flate2::Compression::best());
-        enc.write_all(&data)?;
-        let mut res = enc.finish()?;
-        let length = res
-            .stream_position()
-            .map(|len| len as f64 / (1024.0 * 1024.0))?;
+    let path = out_dir.join(format!("{}.{}", &src.name, MODEL_FILE_EXT));
+    let file = fs::File::create(&path).context("failed to open output voxel file")?;
 
-        eprintln!("Completed {} ({:.2} MB)", src.name, length);
-    }
+    let mut enc = ZlibEncoder::new(file, flate2::Compression::best());
+    enc.write_all(&data).context("failed to write voxel tree")?;
+
+    let mut res = enc.finish().context("failed to write voxel tree")?;
+    let length = res
+        .stream_position()
+        .map(|len| len as f64 / (1024.0 * 1024.0))?;
+
+    eprintln!("Completed {} ({:.2} MB)", src.name, length);
 
     Ok(())
 }

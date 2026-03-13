@@ -16,7 +16,8 @@ struct Material {
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<storage, read> materials: array<Material>;
 @group(0) @binding(2) var tex_sampler: sampler;
-@group(0) @binding(3) var out_voxels: texture_storage_3d<rg32uint, write>;
+@group(0) @binding(3) var voxel_chunk_indices: texture_storage_3d<r32uint, read>;
+@group(0) @binding(4) var out_voxels: texture_storage_3d<r32uint, write>;
 
 // all the gltf's scene textures
 // has to be a separate bind group per wgpu
@@ -39,6 +40,8 @@ struct Primitive {
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
+
+const RAW_CHUNK_SIZE: u32 = 64u;
 
 @compute @workgroup_size(64, 1, 1)
 fn compute_main(in: ComputeIn) {
@@ -79,10 +82,15 @@ fn compute_main(in: ComputeIn) {
     var max_bd = max(max(v0, v1), v2);
 
     min_bd = max(floor(min_bd), vec3(0.0));
-    max_bd = min(ceil(max_bd), scene.size * scene.scale - 1.0);
+    max_bd = min(ceil(max_bd), scene.size * scene.scale);
 
     let min_bd_i = vec3<u32>(min_bd);
     let max_bd_i = vec3<u32>(max_bd);
+
+    let raw_chunks_bds = textureDimensions(out_voxels).xyz / RAW_CHUNK_SIZE;
+
+    // let min_bd_chunk = min_bd_i / CHUNK_SIZE;
+    // let max_bd_chunk = min(max_bd_i / CHUNK_SIZE + 1, chunk_bds);
 
     // TODO this is super slow, might try to subdivide since
     // some threads stall the pipeline with the big triangles
@@ -92,6 +100,12 @@ fn compute_main(in: ComputeIn) {
     for (var x = min_bd_i.x; x < max_bd_i.x; x++) {
         for (var y = min_bd_i.y; y < max_bd_i.y; y++) {
             for (var z = min_bd_i.z; z < max_bd_i.z; z++) {
+                var ci = textureLoad(voxel_chunk_indices, vec3(x, y, z) / RAW_CHUNK_SIZE).r;
+                if ci == 0u {
+                    continue;
+                }
+                ci -= 1u;
+
                 let center = vec3(f32(x), f32(y), f32(z)) + 0.5;
 
                 if !test_voxel(center, v0, v1, v2) {
@@ -136,9 +150,18 @@ fn compute_main(in: ComputeIn) {
                     metallic *= mr.b;
                 }
 
-                let packed = pack_voxel(ws_normal, metallic, roughness);
+                let palette_index = (z + y + z) % 255;
 
-                textureStore(out_voxels, vec3<i32>(vec3(x, y, z)), vec4<u32>(albedo_packed, packed, primitive.material_id, 0u));
+                let packed = pack_voxel(ws_normal, metallic, roughness, palette_index);
+
+                let chunk_offset = vec3<u32>(
+                    ci % raw_chunks_bds.x,
+                    (ci / raw_chunks_bds.x) % raw_chunks_bds.y,
+                    ci / (raw_chunks_bds.x * raw_chunks_bds.y)
+                ) * RAW_CHUNK_SIZE;
+                let voxel_offset = vec3<u32>(x, y, z) % vec3(RAW_CHUNK_SIZE);
+
+                textureStore(out_voxels, chunk_offset + voxel_offset, vec4<u32>(packed, 0u, 0u, 0u));
             }
         }
     }
@@ -235,11 +258,11 @@ fn rand_vec3(seed: u32) -> vec3<f32> {
     );
 }
 
-fn pack_voxel(normal: vec3<f32>, metallic: f32, roughness: f32) -> u32 {
+fn pack_voxel(normal: vec3<f32>, metallic: f32, roughness: f32, palette_index: u32) -> u32 {
     let n = encode_normal_octahedral(normal);
     let m = select(1u, 0u, metallic > 0.5);
     let r = u32(roughness * 15.0 + 0.5);
-    return (n << 15u) | (m << 14u) | (r << 10u);
+    return (n << 15u) | (m << 14u) | (r << 10u) | palette_index;
 }
 
 /// decodes world space normal from lower 17 bits of u32
