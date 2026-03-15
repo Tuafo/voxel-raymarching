@@ -16,8 +16,9 @@ struct Material {
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<storage, read> materials: array<Material>;
 @group(0) @binding(2) var tex_sampler: sampler;
-@group(0) @binding(3) var voxel_chunk_indices: texture_storage_3d<r32uint, read>;
-@group(0) @binding(4) var out_voxels: texture_storage_3d<r32uint, write>;
+@group(0) @binding(3) var tex_raw_chunk_indices: texture_storage_3d<r32uint, read>;
+@group(0) @binding(4) var tex_raw_voxels: texture_storage_3d<r32uint, write>;
+@group(0) @binding(5) var tex_palette_lut: texture_storage_3d<r32uint, read>;
 
 // all the gltf's scene textures
 // has to be a separate bind group per wgpu
@@ -43,30 +44,52 @@ struct ComputeIn {
 
 const RAW_CHUNK_SIZE: u32 = 64u;
 
+struct SampleContext {
+    min: vec3<u32>,
+    max: vec3<u32>,
+    v0: vec3<f32>,
+    v1: vec3<f32>,
+    v2: vec3<f32>,
+    uv_0: vec2<f32>,
+    uv_1: vec2<f32>,
+    uv_2: vec2<f32>,
+    normal_0: vec3<f32>,
+    normal_1: vec3<f32>,
+    normal_2: vec3<f32>,
+    tangent_0: vec4<f32>,
+    tangent_1: vec4<f32>,
+    tangent_2: vec4<f32>,
+}
+var<private> sample: SampleContext;
+var<private> raw_chunks_bds: vec3<u32>;
+
 @compute @workgroup_size(64, 1, 1)
 fn compute_main(in: ComputeIn) {
     if in.id.x * 3u >= primitive.index_count {
         return;
     }
 
+    raw_chunks_bds = textureDimensions(tex_raw_voxels).xyz / RAW_CHUNK_SIZE;
+
     let index_base = in.id.x * 3u;
     let i0 = indices[index_base + 0u];
     let i1 = indices[index_base + 1u];
     let i2 = indices[index_base + 2u];
 
-    let l_p0 = vec3(positions[i0 * 3u], positions[i0 * 3u + 1u], positions[i0 * 3u + 2u]);
-    let l_p1 = vec3(positions[i1 * 3u], positions[i1 * 3u + 1u], positions[i1 * 3u + 2u]);
-    let l_p2 = vec3(positions[i2 * 3u], positions[i2 * 3u + 1u], positions[i2 * 3u + 2u]);
-
     // triangle ws vertex positions
-    let v0 = ((primitive.matrix * vec4(l_p0, 1.0)).xyz - scene.base) * scene.scale;
-    let v1 = ((primitive.matrix * vec4(l_p1, 1.0)).xyz - scene.base) * scene.scale;
-    let v2 = ((primitive.matrix * vec4(l_p2, 1.0)).xyz - scene.base) * scene.scale;
+    sample.v0 = ((primitive.matrix * vec4(positions[i0 * 3u], positions[i0 * 3u + 1u], positions[i0 * 3u + 2u], 1.0)).xyz - scene.base) * scene.scale;
+    sample.v1 = ((primitive.matrix * vec4(positions[i1 * 3u], positions[i1 * 3u + 1u], positions[i1 * 3u + 2u], 1.0)).xyz - scene.base) * scene.scale;
+    sample.v2 = ((primitive.matrix * vec4(positions[i2 * 3u], positions[i2 * 3u + 1u], positions[i2 * 3u + 2u], 1.0)).xyz - scene.base) * scene.scale;
+
+    // triangle uv coords
+    sample.uv_0 = vec2(uvs[i0 * 2u], uvs[i0 * 2u + 1u]);
+    sample.uv_1 = vec2(uvs[i1 * 2u], uvs[i1 * 2u + 1u]);
+    sample.uv_2 = vec2(uvs[i2 * 2u], uvs[i2 * 2u + 1u]);
 
     // triangle ws vertex normals
-    let normal_0 = normalize(primitive.normal_matrix * vec3(normals[i0 * 3u], normals[i0 * 3u + 1u], normals[i0 * 3u + 2u]));
-    let normal_1 = normalize(primitive.normal_matrix * vec3(normals[i1 * 3u], normals[i1 * 3u + 1u], normals[i1 * 3u + 2u]));
-    let normal_2 = normalize(primitive.normal_matrix * vec3(normals[i2 * 3u], normals[i2 * 3u + 1u], normals[i2 * 3u + 2u]));
+    sample.normal_0 = normalize(primitive.normal_matrix * vec3(normals[i0 * 3u], normals[i0 * 3u + 1u], normals[i0 * 3u + 2u]));
+    sample.normal_1 = normalize(primitive.normal_matrix * vec3(normals[i1 * 3u], normals[i1 * 3u + 1u], normals[i1 * 3u + 2u]));
+    sample.normal_2 = normalize(primitive.normal_matrix * vec3(normals[i2 * 3u], normals[i2 * 3u + 1u], normals[i2 * 3u + 2u]));
 
     // triangle vertex tangents
     let model_rot_scale = mat3x3<f32>(
@@ -74,97 +97,181 @@ fn compute_main(in: ComputeIn) {
         primitive.matrix[1].xyz,
         primitive.matrix[2].xyz
     );
-    let tangent_0 = vec4(normalize(model_rot_scale * vec3(tangents[i0 * 4u], tangents[i0 * 4u + 1u], tangents[i0 * 4u + 2u])), tangents[i0 * 4u + 3u]);
-    let tangent_1 = vec4(normalize(model_rot_scale * vec3(tangents[i1 * 4u], tangents[i1 * 4u + 1u], tangents[i1 * 4u + 2u])), tangents[i1 * 4u + 3u]);
-    let tangent_2 = vec4(normalize(model_rot_scale * vec3(tangents[i2 * 4u], tangents[i2 * 4u + 1u], tangents[i2 * 4u + 2u])), tangents[i2 * 4u + 3u]);
+    sample.tangent_0 = vec4(normalize(model_rot_scale * vec3(tangents[i0 * 4u], tangents[i0 * 4u + 1u], tangents[i0 * 4u + 2u])), tangents[i0 * 4u + 3u]);
+    sample.tangent_1 = vec4(normalize(model_rot_scale * vec3(tangents[i1 * 4u], tangents[i1 * 4u + 1u], tangents[i1 * 4u + 2u])), tangents[i1 * 4u + 3u]);
+    sample.tangent_2 = vec4(normalize(model_rot_scale * vec3(tangents[i2 * 4u], tangents[i2 * 4u + 1u], tangents[i2 * 4u + 2u])), tangents[i2 * 4u + 3u]);
 
-    var min_bd = min(min(v0, v1), v2);
-    var max_bd = max(max(v0, v1), v2);
-
+    var min_bd = min(min(sample.v0, sample.v1), sample.v2);
+    var max_bd = max(max(sample.v0, sample.v1), sample.v2);
     min_bd = max(floor(min_bd), vec3(0.0));
     max_bd = min(ceil(max_bd), scene.size * scene.scale);
 
-    let min_bd_i = vec3<u32>(min_bd);
-    let max_bd_i = vec3<u32>(max_bd);
+    sample.min = vec3<u32>(min_bd);
+    sample.max = vec3<u32>(max_bd);
 
-    let raw_chunks_bds = textureDimensions(out_voxels).xyz / RAW_CHUNK_SIZE;
+    voxelize_aabb();
+    // voxelize_triangle_projection();
+}
 
-    // let min_bd_chunk = min_bd_i / CHUNK_SIZE;
-    // let max_bd_chunk = min(max_bd_i / CHUNK_SIZE + 1, chunk_bds);
+// TODO this is super slow, might try to subdivide since
+// some threads stall the pipeline with the big triangles
+// just a generation step though
 
-    // TODO this is super slow, might try to subdivide since
-    // some threads stall the pipeline with the big triangles
-    // maybe new wgpu mesh shaders can help
-    // just a generation step though
 
-    for (var x = min_bd_i.x; x < max_bd_i.x; x++) {
-        for (var y = min_bd_i.y; y < max_bd_i.y; y++) {
-            for (var z = min_bd_i.z; z < max_bd_i.z; z++) {
-                var ci = textureLoad(voxel_chunk_indices, vec3(x, y, z) / RAW_CHUNK_SIZE).r;
-                if ci == 0u {
-                    continue;
-                }
-                ci -= 1u;
-
+// just does a separating axis test on each voxel in the triangle's AABB
+// very slow, but also very accurate
+fn voxelize_aabb() {
+    for (var x = sample.min.x; x < sample.max.x; x++) {
+        for (var y = sample.min.y; y < sample.max.y; y++) {
+            for (var z = sample.min.z; z < sample.max.z; z++) {
                 let center = vec3(f32(x), f32(y), f32(z)) + 0.5;
 
-                if !test_voxel(center, v0, v1, v2) {
-                    continue;
-                }
-                
-                let material = materials[primitive.material_id];
-                if material.albedo_index < 0 {
+                if !test_voxel(center, sample.v0, sample.v1, sample.v2) {
                     continue;
                 }
 
-                let point = project_onto_plane(center, v0, v1, v2);
-                let weights = tri_weights(point, v0, v1, v2);
-
-                let uv_0 = vec2(uvs[i0 * 2u], uvs[i0 * 2u + 1u]);
-                let uv_1 = vec2(uvs[i1 * 2u], uvs[i1 * 2u + 1u]);
-                let uv_2 = vec2(uvs[i2 * 2u], uvs[i2 * 2u + 1u]);
-                let uv = weights.x * uv_0 + weights.y * uv_1 + weights.z * uv_2;
-
-                let albedo = textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
-                let rgba = vec4<u32>(albedo * 255.0 + 0.5);
-                let albedo_packed = ((rgba.r & 0xffu) << 24u) | ((rgba.g & 0xffu) << 16u) | ((rgba.b & 0xffu) << 8u) | 0xffu;
-
-                var ws_normal = normalize(weights.x * normal_0 + weights.y * normal_1 + weights.z * normal_2);
-
-                let ws_tangent = normalize((weights.x * tangent_0 + weights.y * tangent_1 + weights.z * tangent_2).xyz);
-                let ws_bitangent = cross(ws_normal, ws_tangent) * tangent_0.w;
-                let tbn = mat3x3<f32>(
-                    ws_tangent,
-                    ws_bitangent,
-                    ws_normal,
-                );
-
-                let tangent_normal = textureSampleLevel(textures[material.normal_index], tex_sampler, uv, 0.0).rgb * 2.0 - 1.0;
-                ws_normal = normalize(tbn * tangent_normal);
-                
-                var metallic = material.base_metallic;
-                var roughness = material.base_roughness;
-                if material.metallic_roughness_index >= 0 {
-                    let mr = textureSampleLevel(textures[material.metallic_roughness_index], tex_sampler, uv, 0.0);
-                    roughness *= mr.g;
-                    metallic *= mr.b;
-                }
-
-                let palette_index = (z + y + z) % 255;
-
-                let packed = pack_voxel(ws_normal, metallic, roughness, palette_index);
-
-                let chunk_offset = vec3<u32>(
-                    ci % raw_chunks_bds.x,
-                    (ci / raw_chunks_bds.x) % raw_chunks_bds.y,
-                    ci / (raw_chunks_bds.x * raw_chunks_bds.y)
-                ) * RAW_CHUNK_SIZE;
-                let voxel_offset = vec3<u32>(x, y, z) % vec3(RAW_CHUNK_SIZE);
-
-                textureStore(out_voxels, chunk_offset + voxel_offset, vec4<u32>(packed, 0u, 0u, 0u));
+                emit_voxel(center);
             }
         }
     }
+}
+
+// this walks the triangle in 2d, projected off the dominant axis
+// it's a lot faster, but not accurate enough right now
+//
+// should probably just scrap this and just use octrees in the aabb method for speedup,
+// since most impls of this method i've seen have to resort to hacks like voxelizing the wireframe edges
+fn voxelize_triangle_projection() {
+    let tri_normal = cross(sample.v1 - sample.v0, sample.v2 - sample.v0);
+    if dot(tri_normal, tri_normal) < 0.00001 {
+        // two vertices are near identical, just return here
+        return;
+    }
+
+    var axis_d: u32; // dominant axis
+    {
+        let abs_n = abs(tri_normal);
+        axis_d = select(select(0u, 1u, abs_n.y > abs_n.x), 2u, abs_n.z > max(abs_n.x, abs_n.y));
+    }
+    let axis_u = (axis_d + 1u) % 3u;
+    let axis_v = (axis_d + 2u) % 3u;
+
+    let tri_0 = vec2(sample.v0[axis_u], sample.v0[axis_v]);
+    var tri_1 = vec2(sample.v1[axis_u], sample.v1[axis_v]);
+    var tri_2 = vec2(sample.v2[axis_u], sample.v2[axis_v]);
+
+    let normal_uv = vec2(tri_normal[axis_u], tri_normal[axis_v]);
+    let normal_d = tri_normal[axis_d];
+    let normal_d_inv = 1.0 / normal_d;
+
+    let plane_distance = dot(tri_normal, sample.v0);
+    let depth_delta = dot(vec2(0.5), abs(normal_uv * normal_d_inv));
+
+    let edge_01 = tri_1 - tri_0;
+    let edge_02 = tri_2 - tri_0;
+
+    let tri_area = edge_01.x * edge_02.y - edge_01.y * edge_02.x;
+    let tri_area_inv = 1.0 / tri_area;
+    if abs(tri_area) < 0.00001 {
+        return;
+    }
+
+    let scene_max = scene.size * scene.scale;
+    let scene_tri_max = vec2(scene_max[axis_u], scene_max[axis_v]);
+
+    // aabb of the 2d triangle
+    let tri_min = vec2<u32>(max(floor(min(min(tri_0, tri_1), tri_2)), vec2(0.0)));
+    let tri_max = vec2<u32>(min(ceil(max(max(tri_0, tri_1), tri_2)), scene_tri_max));
+
+    for (var u = tri_min.x; u < tri_max.x; u++) {
+        for (var v = tri_min.y; v < tri_max.y; v++) {
+            let ctr = vec2<f32>(f32(u), f32(v)) + 0.5;
+
+            let edge_0c = ctr - tri_0;
+
+            var bary: vec3<f32>;
+            bary.z = (edge_01.x * edge_0c.y - edge_01.y * edge_0c.x) * tri_area_inv;
+            bary.y = (edge_0c.x * edge_02.y - edge_0c.y * edge_02.x) * tri_area_inv;
+            bary.x = 1.0 - bary.z - bary.y;
+
+            if any(bary < vec3(-0.001)) {
+                continue;
+            }
+
+            let depth = (plane_distance - dot(ctr, normal_uv)) * normal_d_inv;
+
+            let min_depth = u32(floor(depth - depth_delta));
+            var max_depth = u32(ceil(depth + depth_delta));
+
+            for (var depth = min_depth; depth <= max_depth; depth++) {
+                var center: vec3<f32>;
+                center[axis_u] = ctr.x;
+                center[axis_v] = ctr.y;
+                center[axis_d] = f32(depth) + 0.5;
+
+                emit_voxel(center);
+            }
+        }
+    }
+}
+
+fn emit_voxel(center: vec3<f32>) {
+    let pos = vec3<u32>(center);
+    if any(pos < sample.min) || any(pos >= sample.max) {
+        return;
+    }
+
+    var ci = textureLoad(tex_raw_chunk_indices, pos / RAW_CHUNK_SIZE).r;
+    if (ci & 1u) == 0u {
+        return;
+    }
+    ci >>= 1u;
+
+    let material = materials[primitive.material_id];
+    if material.albedo_index < 0 {
+        return;
+    }
+
+    let point = project_onto_plane(center, sample.v0, sample.v1, sample.v2);
+    let weights = tri_weights(point, sample.v0, sample.v1, sample.v2);
+
+    let uv = weights.x * sample.uv_0 + weights.y * sample.uv_1 + weights.z * sample.uv_2;
+
+    let albedo = textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
+    let palette_pos = vec3<u32>(albedo.rgb * 255.0 + 0.5);
+    let palette_index = textureLoad(tex_palette_lut, palette_pos).r;
+
+    var ws_normal = normalize(weights.x * sample.normal_0 + weights.y * sample.normal_1 + weights.z * sample.normal_2);
+
+    let ws_tangent = normalize((weights.x * sample.tangent_0 + weights.y * sample.tangent_1 + weights.z * sample.tangent_2).xyz);
+    let ws_bitangent = cross(ws_normal, ws_tangent) * sample.tangent_0.w;
+    let tbn = mat3x3<f32>(
+        ws_tangent,
+        ws_bitangent,
+        ws_normal,
+    );
+
+    let tangent_normal = textureSampleLevel(textures[material.normal_index], tex_sampler, uv, 0.0).rgb * 2.0 - 1.0;
+    ws_normal = normalize(tbn * tangent_normal);
+
+    var metallic = material.base_metallic;
+    var roughness = material.base_roughness;
+    if material.metallic_roughness_index >= 0 {
+        let mr = textureSampleLevel(textures[material.metallic_roughness_index], tex_sampler, uv, 0.0);
+        roughness *= mr.g;
+        metallic *= mr.b;
+    }
+
+    let packed = pack_voxel(ws_normal, metallic, roughness, palette_index);
+
+    let chunk_offset = vec3<u32>(
+        ci % raw_chunks_bds.x,
+        (ci / raw_chunks_bds.x) % raw_chunks_bds.y,
+        ci / (raw_chunks_bds.x * raw_chunks_bds.y)
+    ) * RAW_CHUNK_SIZE;
+    let voxel_offset = pos % vec3(RAW_CHUNK_SIZE);
+
+    textureStore(tex_raw_voxels, chunk_offset + voxel_offset, vec4<u32>(packed, 0u, 0u, 0u));
 }
 
 const EXTENT: f32 = 0.5;
@@ -236,26 +343,6 @@ fn project_onto_plane(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>, c: vec3<f32>) ->
     let normal = normalize(cross(b - a, c - a));
     let dist = dot(normal, p - a);
     return p - dist * normal;
-}
-
-fn hash(n: u32) -> u32 {
-    var x = n;
-    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
-    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
-    x = (x >> 16u) ^ x;
-    return x;
-}
-
-fn rand_vec3(seed: u32) -> vec3<f32> {
-    let h1 = hash(seed);
-    let h2 = hash(h1);
-    let h3 = hash(h2);
-
-    return vec3<f32>(
-        f32(h1) / 4294967295.0,
-        f32(h2) / 4294967295.0,
-        f32(h3) / 4294967295.0
-    );
 }
 
 fn pack_voxel(normal: vec3<f32>, metallic: f32, roughness: f32, palette_index: u32) -> u32 {

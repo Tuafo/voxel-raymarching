@@ -4,18 +4,21 @@
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
 
 struct VoxelSceneMetadata {
-    size: vec3<u32>,
+	bounding_size: u32,
+	index_levels: u32,
+	index_chunk_count: u32,
 }
 struct Palette {
     data: array<vec4<f32>, 1024>,
 }
-struct Chunk {
-    mask: array<u32, 16>,
+struct IndexChunk {
+	child_index: u32,
+	mask: array<u32, 2>,
 }
 @group(2) @binding(0) var<uniform> scene: VoxelSceneMetadata;
 @group(2) @binding(1) var<uniform> palette: Palette;
-@group(2) @binding(2) var<storage, read> chunk_indices: array<u32>;
-@group(2) @binding(3) var<storage, read> chunks: array<Chunk>;
+@group(2) @binding(2) var<storage, read> index_chunks: array<IndexChunk>;
+@group(2) @binding(3) var<storage, read> leaf_chunks: array<u32>;
 @group(2) @binding(4) var tex_noise: texture_3d<f32>;
 @group(2) @binding(5) var sampler_noise: sampler;
 
@@ -61,10 +64,12 @@ var<workgroup> results: atomic<u32>;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
-    @builtin(local_invocation_index) index: u32,
+    @builtin(local_invocation_index) local_index: u32,
     @builtin(local_invocation_id) thread_id: vec3<u32>,
     @builtin(workgroup_id) group_id: vec3<u32>,
 }
+
+var<workgroup> stack: array<array<u32, 11>, 64>;
 
 const DDA_MAX_STEPS: u32 = 300u;
 const SKY_COLOR: vec3<f32> = vec3(0.5, 0.9, 1.5);
@@ -96,7 +101,7 @@ fn compute_main(in: ComputeIn) {
 
     let noise = blue_noise(in.id.xy);
 
-    let res = trace_shadow(pos, noise, ls_pos, ls_normal);
+    let res = trace_shadow(pos, noise, ls_pos, ls_normal, in.local_index);
     if res {
         let index = (7 - in.thread_id.x) + (in.thread_id.y << 3u);
         atomicOr(&results, 1u << index);
@@ -104,13 +109,13 @@ fn compute_main(in: ComputeIn) {
 
     workgroupBarrier();
 
-    if in.index == 0u {
+    if in.local_index == 0u {
         let mask = atomicLoad(&results);
         textureStore(tex_out, in.group_id.xy, vec4<u32>(mask, 0u, 0u, 0u));
     }
 }
 
-fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>) -> bool {
+fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: vec3<f32>, local_index: u32) -> bool {
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
 
     let light_tangent = normalize(cross(light_dir, vec3(0.0, 0.0, 1.0)));
@@ -130,7 +135,7 @@ fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal: 
     ray.origin = ls_pos + environment.shadow_bias * ls_normal;
     ray.direction = dir;
 
-    let occluded = raymarch_shadow(ray);
+    let occluded = raymarch_shadow(ray, local_index);
     // let occluded = false;
     return !occluded;
     // return select(1.0, 0.0, occluded);
@@ -166,73 +171,123 @@ struct Ray {
     direction: vec3<f32>,
 }
 
-fn raymarch_shadow(ray: Ray) -> bool {
-    let origin = ray.origin / 8.0;
-    let dir = ray.direction;
+fn raymarch_shadow(ray: Ray, local_index: u32) -> bool {
+	var dir = ray.direction;
+	// let inv_dir = sign(dir) / max(vec3(1e-7), abs(dir));
+	let inv_dir = 1.0 / -abs(dir);
 
-    let step = vec3<i32>(sign(dir));
-    let ray_delta = vec3(1.0) / max(vec3(1e-7), abs(dir));
+	let scale = 1.0 / f32(scene.bounding_size);
+	var origin = ray.origin * scale + 1.0;
+	origin = mirrored_pos(origin, dir);
 
-    var pos = vec3<i32>(floor(origin));
-    var ray_length = ray_delta * (sign(dir) * (vec3<f32>(pos) - origin) + (sign(dir) * 0.5) + 0.5);
-    var prev_ray_length = vec3<f32>(0.0);
-    var mask = vec3(false);
+	var pos = clamp(origin, vec3(1.0), vec3(1.9999999));
+	
+	var mirror_mask = 0u;
+	mirror_mask |= select(0u, 3u, dir.x > 0.0) << 0u;
+	mirror_mask |= select(0u, 3u, dir.y > 0.0) << 4u;
+	mirror_mask |= select(0u, 3u, dir.z > 0.0) << 2u;
 
-    if all(step == vec3(0)) {
-        return false;
-    }
+	var scale_exp = 21u;
+	var side_distance: vec3<f32>;
 
-    for (var i = 0u; i < 256u && all(pos < vec3<i32>(scene.size)) && all(pos >= vec3(0)); i++) {
+	var ci = 0u;
+	var chunk = index_chunks[ci];
 
-        let chunk_pos_index = u32(pos.z) * scene.size.x * scene.size.y + u32(pos.y) * scene.size.x + u32(pos.x);
-        let chunk_index = chunk_indices[chunk_pos_index];
+	var i = 0u;
+	for (i = 0u; i < 256; i++) {
+		var child_offset = chunk_offset(pos, scale_exp) ^ mirror_mask;
 
-        if chunk_index != 0u {
-            // if i > 6u {
-            //     return true;
-            // }
-            // now we do dda within the brick
-            var chunk = chunks[chunk_index - 1u];
+		while (chunk_contains_child(chunk.mask, child_offset) && !chunk_is_leaf(chunk.child_index) && scale_exp >= 2u) {
+			stack[local_index][scale_exp >> 1u] = ci;
+			ci = (chunk.child_index >> 1u) + mask_packed_offset(chunk.mask, child_offset);
+			chunk = index_chunks[ci];
 
-            let t_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
-            let brick_origin = clamp((origin - vec3<f32>(pos) + dir * (t_entry + 1e-6)) * 8.0, vec3(1e-6), vec3(8.0 - 1e-6));
+			scale_exp -= 2u;
+			child_offset = chunk_offset(pos, scale_exp) ^ mirror_mask;
+		}
 
-            var brick_pos = vec3<i32>(floor(brick_origin));
-            var brick_ray_length = ray_delta * (sign(dir) * (floor(brick_origin) - brick_origin) + (sign(dir) * 0.5) + 0.5);
+		// if we reached a leaf, we're done
+		if chunk_contains_child(chunk.mask, child_offset) && chunk_is_leaf(chunk.child_index) {
+			return true;
+		}
 
-            prev_ray_length = vec3<f32>(0.0);
+		var adv_scale_exp = scale_exp;
 
-            for (var j = 0u; j < 100u && all(brick_pos < vec3(8)) && all(brick_pos >= vec3(0)); j++) {
-                let voxel_index = (brick_pos.z << 6u) | (brick_pos.y << 3u) | brick_pos.x;
-                if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
-                    return true;
-                }
+		let snapped_idx = child_offset & 0x2Au;
+		if ((chunk.mask[snapped_idx >> 5u] >> (snapped_idx & 31u)) & 0x00330033u) == 0u {
+			adv_scale_exp++;
+		}
+		let edge_pos = floor_scale(pos, adv_scale_exp);
 
-                prev_ray_length = brick_ray_length;
+		side_distance = (edge_pos - origin) * inv_dir;
+		let t_max = min(min(side_distance.x, side_distance.y), side_distance.z);
 
-                mask = step_mask(brick_ray_length);
-                brick_ray_length += vec3<f32>(mask) * ray_delta;
-                brick_pos += vec3<i32>(mask) * step;
-            }
-        }
+		let max_sibling_bounds: vec3<i32> = bitcast<vec3<i32>>(edge_pos) + select(vec3(i32(1u << adv_scale_exp) - 1), vec3(-1), side_distance == vec3(t_max));
+		pos = min(origin - abs(dir) * t_max, bitcast<vec3<f32>>(max_sibling_bounds));
 
-        prev_ray_length = ray_length;
+		// carry bit tells us which node to go up to
+		let diff_pos: vec3<u32> = bitcast<vec3<u32>>(pos) ^ bitcast<vec3<u32>>(edge_pos);
+		let diff_exp = firstLeadingBit((diff_pos.x | diff_pos.y | diff_pos.z) & 0xFFAAAAAAu);
 
-        mask = step_mask(ray_length);
-        ray_length += vec3<f32>(mask) * ray_delta;
-        pos += vec3<i32>(mask) * step;
-    }
-    return false;
+		// ascend
+		if i32(diff_exp) > i32(scale_exp) {
+			scale_exp = diff_exp;
+			if diff_exp > 21 {
+				break;
+			}
+			
+			ci = stack[local_index][scale_exp >> 1u];
+			chunk = index_chunks[ci];
+		}
+	}
+
+	return false;
 }
 
-fn step_mask(ray_length: vec3<f32>) -> vec3<bool> {
-    var res = vec3(false);
+/// ------------------------------------------------------
+/// ---------------- tree traversal utils ----------------
 
-    res.x = ray_length.x < ray_length.y && ray_length.x < ray_length.z;
-    res.y = !res.x && ray_length.y < ray_length.z;
-    res.z = !res.x && !res.y;
+fn mirrored_pos(pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
+	var mirrored: vec3<f32> = bitcast<vec3<f32>>(bitcast<vec3<u32>>(pos) ^ vec3(0x7FFFFFu));
+	
+	if any(pos < vec3<f32>(1.0)) || any(pos >= vec3<f32>(2.0)) {
+		mirrored = 3.0 - pos;
+	}
+	return select(pos, mirrored, dir > vec3(0.0));
+}
 
-    return res;
+fn mirrored_pos_unchecked(pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
+	let mirrored: vec3<f32> = bitcast<vec3<f32>>(bitcast<vec3<u32>>(pos) ^ vec3(0x7FFFFFu));
+	return select(pos, mirrored, dir > vec3(0.0));
+}
+
+/// computes floor(pos / scale) * scale
+fn floor_scale(pos: vec3<f32>, scale_exp: u32) -> vec3<f32> {
+	let mask = ~0u << scale_exp;
+	return bitcast<vec3<f32>>(bitcast<vec3<u32>>(pos) & vec3(mask));
+}
+
+fn chunk_offset(pos: vec3<f32>, scale_exp: u32) -> u32 {
+    let chunk_pos = (bitcast<vec3<u32>>(pos) >> vec3(scale_exp)) & vec3(3u);
+    return (chunk_pos.y << 4u) | (chunk_pos.z << 2u) | chunk_pos.x;
+}
+
+fn chunk_contains_child(mask: array<u32, 2>, offset: u32) -> bool {
+	let half_mask = select(mask[0], mask[1], offset >= 32u);
+	return (half_mask & (1u << (offset & 31u))) != 0u;
+}
+
+/// given mask and index i, gets packed offset based on count of 1s in mask for 0 <= j < i 
+fn mask_packed_offset(mask: array<u32, 2>, i: u32) -> u32 {
+    if i < 32u {
+        return countOneBits(mask[0] & ~(0xffffffffu << i));
+    } else {
+        return countOneBits(mask[0]) + countOneBits(mask[1] & ~(0xffffffffu << (i - 32u)));
+    }
+}
+
+fn chunk_is_leaf(child_index: u32) -> bool {
+	return (child_index & 1u) == 1u;
 }
 
 

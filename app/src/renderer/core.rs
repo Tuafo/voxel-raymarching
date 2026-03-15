@@ -70,7 +70,7 @@ pub struct Renderer {
 
 struct Pipelines {
     raymarch: wgpu::ComputePipeline,
-    // shadow: wgpu::ComputePipeline,
+    shadow: wgpu::ComputePipeline,
     // ambient: wgpu::ComputePipeline,
     // specular: wgpu::ComputePipeline,
     lighting_resolve: wgpu::ComputePipeline,
@@ -348,12 +348,12 @@ impl Renderer {
                     &bg_layouts.raymarch_static,
                     &bg_layouts.per_frame_shared,
                 ]),
-            // shadow: device.compute_pipeline("shadow", &shaders.shadow).layout(&[
-            //     &bg_layouts.shadow_gbuffer,
-            //     &bg_layouts.ambient_swap,
-            //     &bg_layouts.ambient_static,
-            //     &bg_layouts.per_frame_shared,
-            // ]),
+            shadow: device.compute_pipeline("shadow", &shaders.shadow).layout(&[
+                &bg_layouts.shadow_gbuffer,
+                &bg_layouts.ambient_swap,
+                &bg_layouts.raymarch_static,
+                &bg_layouts.per_frame_shared,
+            ]),
             // ambient: device
             //     .compute_pipeline("ambient", &shaders.ambient)
             //     .layout(&[
@@ -1498,18 +1498,18 @@ impl Renderer {
         }
 
         // shadow pass
-        // {
-        //     let mut pass = encoder.begin_compute_pass_timed("Shadow", &mut self.timing);
+        {
+            let mut pass = encoder.begin_compute_pass_timed("Shadow", &mut self.timing);
 
-        //     pass.set_pipeline(&self.pipelines.shadow);
-        //     pass.set_bind_group(0, &self.bind_groups.shadow_gbuffer, &[]);
-        //     pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
-        //     pass.set_bind_group(2, &self.bind_groups.ambient_static, &[]);
-        //     pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
+            pass.set_pipeline(&self.pipelines.shadow);
+            pass.set_bind_group(0, &self.bind_groups.shadow_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &self.bind_groups.ambient_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.raymarch_static, &[]);
+            pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
-        //     pass.insert_debug_marker("shadow");
-        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(4), 1);
-        // }
+            pass.insert_debug_marker("shadow");
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(4), 1);
+        }
 
         // // ambient pass
         // {

@@ -125,11 +125,11 @@ fn build_leaf_chunk(base_pos: vec3<u32>) -> IndexChunk {
     let raw_chunk_pos = base_pos / RAW_CHUNK_SIZE;
 
     var raw_ci = textureLoad(raw_chunk_indices, raw_chunk_pos).r;
-    if raw_ci == 0u {
+    if (raw_ci & 1u) == 0u {
         chunk.child_index = 1u;
         return chunk;
     }
-    raw_ci -= 1u;
+    raw_ci >>= 1u;
 
     let raw_chunk_offset = vec3<u32>(
         raw_ci % raw_chunk_bds.x,
@@ -153,38 +153,6 @@ fn build_leaf_chunk(base_pos: vec3<u32>) -> IndexChunk {
             chunk.child_mask[local_index >> 5u] |= 1u << (local_index & 31u);
             voxels[i] = voxel;
         }
-
-        // let raw = textureLoad(raw_voxels, vec3<i32>(pos)).rgb;
-        // let albedo_packed = raw.r;
-        // let normal_metallic_roughness = raw.g;
-        // let material_id = raw.b;
-
-        // let albedo_srgb = vec3<f32>(
-        //     f32(albedo_packed >> 24u) / 255.0,
-        //     f32((albedo_packed >> 16u) & 0xffu) / 255.0,
-        //     f32((albedo_packed >> 8u) & 0xffu) / 255.0,
-        // );
-        // let albedo_linear = srgb_to_linear(albedo_srgb);
-        // let albedo_oklab = linear_rgb_to_oklab(albedo_linear);
-
-        // var palette_index = 0u;
-        // if albedo_packed > 0u {
-        //     var min_distance = 1e10;
-        //     for (var i = 1u; i < 1024u; i++) {
-        //     // for (var i = 1u; i < 2u; i++) {
-        //         let palette_rgb = palette.data[i].rgb;
-        //         let palette_oklab = linear_rgb_to_oklab(palette_rgb);
-
-        //         let d = distance(palette_oklab, albedo_oklab);
-        //         if d < min_distance {
-        //             palette_index = i;
-        //             min_distance = d;
-        //         }
-        //     }
-
-        //     chunk.child_mask[local_index >> 5u] |= 1u << (local_index & 31u);
-        // }
-        // voxels[i] = normal_metallic_roughness | palette_index;
     }
 
     let voxels_count = countOneBits(chunk.child_mask[0]) + countOneBits(chunk.child_mask[1]);

@@ -152,7 +152,7 @@ impl Scene {
                         .iter()
                         .filter_map(|p| {
                             Primitive::from_gltf(&gltf, p)
-                                .inspect_err(|err| eprintln!("error loading primitive: {:#?}", err))
+                                // .inspect_err(|err| eprintln!("error loading primitive: {:#?}", err))
                                 .ok()
                         })
                         .collect::<Vec<Primitive>>();

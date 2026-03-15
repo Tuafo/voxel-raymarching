@@ -163,7 +163,7 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 	
 	var dir = ray.direction;
 	// let inv_dir = sign(dir) / max(vec3(1e-7), abs(dir));
-	let inv_dir = 1.0 / -abs(dir);
+	let inv_dir = -1.0 / max(abs(dir), vec3(1e-8));
 
 	let scale = 1.0 / f32(scene.bounding_size);
 	var origin = ray.ls_origin * scale + (ray.t_start * ray.direction) * scale + 1.0;
@@ -186,7 +186,15 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 	for (i = 0u; i < 256; i++) {
 		var child_offset = chunk_offset(pos, scale_exp) ^ mirror_mask;
 
-		while (chunk_contains_child(chunk.mask, child_offset) && !chunk_is_leaf(chunk.child_index) && scale_exp >= 2u) {
+		// while (chunk_contains_child(chunk.mask, child_offset) && !chunk_is_leaf(chunk.child_index) && scale_exp >= 2u) {
+		while ((scale_exp >= 2) & chunk_contains_child(chunk.mask, child_offset) & (!chunk_is_leaf(chunk.child_index))) {
+			// let is_valid = scale_exp >= 2u;
+			// let has_child = chunk_contains_child(chunk.mask, child_offset);
+			// let is_node = !chunk_is_leaf(chunk.child_index);
+			// if !(is_valid & has_child & is_node) {
+			// 	break;
+			// }
+
 			stack[local_index][scale_exp >> 1u] = ci;
 			ci = (chunk.child_index >> 1u) + mask_packed_offset(chunk.mask, child_offset);
 			chunk = index_chunks[ci];
@@ -223,9 +231,9 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 		var adv_scale_exp = scale_exp;
 
 		let snapped_idx = child_offset & 0x2Au;
-		if ((chunk.mask[snapped_idx >> 5u] >> (snapped_idx & 31u)) & 0x00330033u) == 0u {
-			adv_scale_exp++;
-		}
+		let sub_chunk_empty = ((chunk.mask[snapped_idx >> 5u] >> (snapped_idx & 31u)) & 0x00330033u) == 0u;
+		adv_scale_exp += u32(sub_chunk_empty);
+
 		let edge_pos = floor_scale(pos, adv_scale_exp);
 
 		side_distance = (edge_pos - origin) * inv_dir;
@@ -288,142 +296,17 @@ fn chunk_contains_child(mask: array<u32, 2>, offset: u32) -> bool {
 
 /// given mask and index i, gets packed offset based on count of 1s in mask for 0 <= j < i 
 fn mask_packed_offset(mask: array<u32, 2>, i: u32) -> u32 {
-    if i < 32u {
-        return countOneBits(mask[0] & ~(0xffffffffu << i));
-    } else {
-        return countOneBits(mask[0]) + countOneBits(mask[1] & ~(0xffffffffu << (i - 32u)));
-    }
+	return select(
+		countOneBits(mask[0]) + countOneBits(mask[1] & ~(0xffffffffu << (i - 32u))),
+		countOneBits(mask[0] & ~(0xffffffffu << i)),
+		i < 32u
+	);
 }
 
 fn chunk_is_leaf(child_index: u32) -> bool {
 	return (child_index & 1u) == 1u;
 }
 
-// fn raymarch(ray: Ray) -> RaymarchResult {
-// 	if !ray.in_bounds {
-// 		return RaymarchResult();
-// 	}
-
-// 	let size_chunks = vec3<i32>(scene.size);
-// 	let origin = ray.origin / 8.0;
-// 	let dir = ray.direction;
-
-// 	let ray_step = vec3<i32>(sign(dir));
-// 	let ray_delta = vec3(1.0) / max(vec3(1e-7), abs(dir));
-
-// 	var pos = vec3<i32>(floor(origin));
-// 	var ray_length = ray_delta * (sign(dir) * (vec3<f32>(pos) - origin) + (sign(dir) * 0.5) + 0.5);
-// 	var prev_ray_length = vec3(0.0);
-
-// 	if any(pos >= size_chunks) || any(pos < vec3(0)) {
-// 		return RaymarchResult();
-// 	}
-
-// 	for (var i = 0u; i < DDA_MAX_STEPS; i++) {
-// 		let chunk_pos_index = pos.z * size_chunks.x * size_chunks.y + pos.y * size_chunks.x + pos.x;
-// 		let chunk_index = chunk_indices[chunk_pos_index];
-
-// 		if chunk_index != 0u {
-// 			// now we do dda within the brick
-// 			var chunk = chunks[chunk_index - 1u];
-
-// 			var mask = step_mask(prev_ray_length);
-
-// 			let t_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
-// 			let brick_origin = clamp((origin - vec3<f32>(pos) + dir * (t_entry + 1e-6)) * 8.0, vec3(1e-6), vec3(8.0 - 1e-6));
-
-// 			var brick_pos = vec3<i32>(floor(brick_origin));
-// 			var brick_ray_length = ray_delta * (sign(dir) * (floor(brick_origin) - brick_origin) + (sign(dir) * 0.5) + 0.5);
-
-// 			prev_ray_length = vec3<f32>(0.0);
-
-// 			while all(brick_pos >= vec3(0)) && all(brick_pos < vec3(8)) {
-// 				let voxel_index = (brick_pos.z << 6u) | (brick_pos.y << 3u) | brick_pos.x;
-// 				if (chunk.mask[u32(voxel_index) >> 5u] & (1u << (u32(voxel_index) & 31u))) != 0u {
-// 					let brick_index = i32(chunk_index - 1u);
-// 					let base_index = vec3<i32>(
-// 						(brick_index % size_chunks.x) << 3u,
-// 						((brick_index / size_chunks.x) % size_chunks.y) << 3u,
-// 						(brick_index / (size_chunks.x * size_chunks.y)) << 3u
-// 					);
-// 					let packed = textureLoad(brickmap, vec3<i32>(base_index) + brick_pos).r;
-
-// 					// t_total is the total t-value traveled from the camera to the hit voxel
-// 					// ray.t_start refers to how far we had to project forward to get into the volume
-// 					let t_brick_entry = min(min(prev_ray_length.x, prev_ray_length.y), prev_ray_length.z);
-// 					let t_total = ray.t_start + t_entry * 8.0 + t_brick_entry;
-// 					let local_pos = ray.ls_origin + dir * t_total;
-
-// 					var res: RaymarchResult;
-// 					res.hit = true;
-// 					res.voxel = unpack_voxel(packed);
-// 					res.hit_normal = normalize(-vec3<f32>(sign(dir)) * vec3<f32>(mask));
-// 					res.local_pos = local_pos;
-// 					res.depth = t_total;
-// 					res.hit_mask = mask;
-// 					return res;
-// 				}
-
-// 				prev_ray_length = brick_ray_length;
-
-// 				// for some reason the branchless approach is faster here,
-// 				// just some weird register optimization with naga,
-// 				// likely doesn't happen on the outer loop since the scene size is non-constant,
-// 				// worth further investigation as it's non-negligable at least on my machine
-// 				mask = step_mask(brick_ray_length);
-// 				brick_ray_length += vec3<f32>(mask) * ray_delta;
-// 				brick_pos += vec3<i32>(mask) * ray_step;
-// 			}
-// 		}
-
-// 		prev_ray_length = ray_length;
-
-// 		// simple DDA traversal http://cse.yorku.ca/~amana/research/grid.pdf
-// 		// trying clean "branchless" versions ate up ALU cycles on my nvidia card
-// 		// simple is fast
-// 		if ray_length.x < ray_length.y {
-// 			if ray_length.x < ray_length.z {
-// 				pos.x += ray_step.x;
-// 				if pos.x < 0 || pos.x >= size_chunks.x {
-// 					break;
-// 				}
-// 				ray_length.x += ray_delta.x;
-// 			} else {
-// 				pos.z += ray_step.z;
-// 				if pos.z < 0 || pos.z >= size_chunks.z {
-// 					break;
-// 				}
-// 				ray_length.z += ray_delta.z;
-// 			}
-// 		} else {
-// 			if ray_length.y < ray_length.z {
-// 				pos.y += ray_step.y;
-// 				if pos.y < 0 || pos.y >= size_chunks.y {
-// 					break;
-// 				}
-// 				ray_length.y += ray_delta.y;
-// 			} else {
-// 				pos.z += ray_step.z;
-// 				if pos.z < 0 || pos.z >= size_chunks.z {
-// 					break;
-// 				}
-// 				ray_length.z += ray_delta.z;
-// 			}
-// 		}
-// 	}
-
-// 	return RaymarchResult();
-// }
-
-fn step_mask(ray_length: vec3<f32>) -> vec3<bool> {
-	var res = vec3(false);
-
-	res.x = ray_length.x < ray_length.y && ray_length.x < ray_length.z;
-	res.y = !res.x && ray_length.y < ray_length.z;
-	res.z = !res.x && !res.y;
-
-	return res;
-}
 
 fn start_ray(uv: vec2<f32>) -> Ray {
 	let ndc = vec2<f32>(uv.x, 1.0 - uv.y) * 2.0 - 1.0;

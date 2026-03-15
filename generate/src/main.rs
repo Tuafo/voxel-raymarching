@@ -71,6 +71,9 @@ fn init_device() -> Result<(wgpu::Device, wgpu::Queue)> {
     features |= wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
     features |= wgpu::Features::CLEAR_TEXTURE;
     features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+    features |= wgpu::Features::TIMESTAMP_QUERY;
+    features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+    features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
 
     let mut limits = wgpu::Limits::default();
     limits.max_sampled_textures_per_shader_stage = 460;
