@@ -107,10 +107,11 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let uv_jittered = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
     let ray_uv = select(uv_jittered, uv, frame.taa_enabled == 0u);
 
-    let ray = raymarch(start_ray(ray_uv), local_index);
+    let ray = start_ray(ray_uv);
+    let hit = raymarch(start_ray(ray_uv), local_index);
 
-    if ray.hit {
-        map_insert(ray.id);
+    if hit.hit {
+        map_insert(hit.id);
         // if atomicOr(&visibility_mask[ray.leaf_index >> 3u], 1u << (ray.leaf_index & 7u)) == 0u {
         // set visibility bitmask
         //     let queue_index = atomicAdd(&voxel_info.visible_count, 1u);
@@ -128,11 +129,11 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
         return res;
     }
 
-    let voxel = unpack_voxel(leaf_chunks[ray.leaf_index]);
+    let voxel = unpack_voxel(leaf_chunks[hit.leaf_index]);
 
-    let ws_pos_h = model.transform * vec4<f32>(ray.local_pos, 1.0);
+    let ws_pos_h = model.transform * vec4<f32>(hit.local_pos, 1.0);
     let ws_pos = ws_pos_h.xyz;
-    let depth = ray.depth;
+    let depth = hit.depth;
 
     let cs_pos = environment.camera.view_proj * ws_pos_h;
     let ndc = cs_pos.xyz / cs_pos.w;
@@ -147,16 +148,16 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let albedo = palette_color(voxel.palette_index);
     // let albedo = vec3(f32(ray.voxel.palette_index) / 255.0);
 
-    let ls_normal = align_per_voxel_normal(ray.hit_normal, voxel.normal);
+    let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal);
     // let ls_normal = ray.hit_normal;
     let ws_normal = normalize(model.normal_transform * ls_normal);
 
-    let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, ray.hit_mask);
+    let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, hit.hit_mask, ray.direction);
     // let packed = repack_voxel(ws_normal,1.0, 0.04, ray.hit_mask);
 
     var res: SceneResult;
     res.albedo = albedo;
-    res.voxel_id = ray.id;
+    res.voxel_id = hit.id;
     res.normal = packed;
     res.depth = depth;
     res.velocity = velocity;
@@ -187,7 +188,6 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
     }
 
     var dir = ray.direction;
-    // let inv_dir = sign(dir) / max(vec3(1e-7), abs(dir));
     let inv_dir = -1.0 / max(abs(dir), vec3(1e-8));
 
     let scale = 1.0 / f32(scene.bounding_size);
@@ -239,9 +239,14 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 
             let mask = vec3(t_max) >= side_distance;
 
+            // TODO: this will overflow if we have > ~8 million index leaf chunks and i go back to putting the hit mask here
+            // we're set if we keep 26 bits for the chunk index like here though
+            // sitting around 1 million on the bistro scene at 20 voxels /meter right now.
+            let id = (ci << 6u) | child_offset;
+
             var res: RaymarchResult;
             res.hit = true;
-            res.id = (ci << 6u) | child_offset;
+            res.id = id;
             res.leaf_index = leaf_index;
             res.hit_normal = normalize(-vec3<f32>(sign(dir)) * vec3<f32>(mask));
             res.depth = t_total;
@@ -288,21 +293,21 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 /// ------------------------------------------------------
 /// -------------------- map utils -----------------------
 
-fn map_insert(id: u32) -> bool {
+fn map_insert(key: u32) -> bool {
     let n = arrayLength(&voxel_map) >> 1u;
 
-    var key = hash_murmur3(id) % n;
-    for (var i = 0u; i < 4u; i++) {
-        let res = atomicCompareExchangeWeak(&voxel_map[key << 1u], 0u, id);
+    var index = (hash_murmur3(key) % n) << 1u;
+    for (var _i = 0u; _i < 4u; _i++) {
+        let res = atomicCompareExchangeWeak(&voxel_map[index], 0u, key);
         if res.exchanged {
-            let index = atomicAdd(&voxel_info.visible_count, 1u);
-            atomicStore(&voxel_map[(key << 1u) + 1u], index);
+            let value = atomicAdd(&voxel_info.visible_count, 1u);
+            atomicStore(&voxel_map[index + 1u], value); // this doesn't need to be atomic, it's pretty cheap though
             return true;
         }
-        if res.old_value == id {
+        if res.old_value == key {
             return false;
         }
-        key += 1u;
+        index += 2u;
     }
 
     // for tracking
@@ -452,12 +457,13 @@ fn decode_hit_mask(packed: u32) -> vec3<bool> {
     return vec3<bool>(mask);
 }
 
-fn repack_voxel(ws_normal: vec3<f32>, metallic: f32, roughness: f32, hit_mask: vec3<bool>) -> u32 {
+fn repack_voxel(ws_normal: vec3<f32>, metallic: f32, roughness: f32, hit_mask: vec3<bool>, ray_dir: vec3<f32>) -> u32 {
     let n = encode_normal_octahedral(ws_normal);
     let m = select(1u, 0u, metallic > 0.5);
     let r = u32(roughness * 15.0 + 0.5) & 15u;
     let hm = encode_hit_mask(hit_mask) & 7u;
-    return (n << 11u) | (m << 10u) | (r << 6u) | (hm << 3u);
+    let dir_mask = encode_hit_mask(vec3<bool>(ray_dir >= vec3(0.0))) & 7u;
+    return (n << 11u) | (m << 10u) | (r << 6u) | (hm << 3u) | dir_mask;
 }
 
 struct Voxel {

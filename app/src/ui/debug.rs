@@ -192,7 +192,7 @@ impl DebugWindow {
                 ui.end_row();
 
                 ui.label("Shadow Bias");
-                ui.add(egui::Slider::new(&mut config.shadow_bias, 0.0..=0.025));
+                ui.add(egui::Slider::new(&mut config.shadow_bias, 0.0..=10.0));
                 ui.end_row();
 
                 ui.label("Shadow Spread");

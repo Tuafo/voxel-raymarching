@@ -85,16 +85,18 @@ fn compute_main(in: ComputeIn) {
     if !map_val.exists {
         return;
     }
-    let voxel_pos = vec3<f32>(get_voxel_position(voxel_id)) + 0.5;
-
-    let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
 
     let packed = textureLoad(tex_normal, pos).r;
     let voxel = unpack_voxel(packed);
 
-    let ls_normal = normalize(model.inv_normal_transform * voxel.ws_normal);
-    let ls_hit_normal = normalize(-vec3<f32>(sign(ray.direction)) * vec3<f32>(voxel.hit_mask));
-    let ls_pos = ray.origin + ray.direction * ray_length;
+    var voxel_pos = vec3<f32>(get_voxel_position(voxel_id)) + 0.5;
+    // voxel_pos += (0.5 + environment.shadow_bias * 20.0) * voxel.ls_hit_normal;
+
+    // let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
+
+    // let ls_normal = normalize(model.inv_normal_transform * voxel.ws_normal);
+    // let ls_hit_normal = normalize(-vec3<f32>(sign(ray.direction)) * vec3<f32>(voxel.hit_mask));
+    // let ls_pos = ray.origin + ray.direction * ray_length;
 
     let noise = blue_noise(in.id.xy);
 
@@ -127,7 +129,7 @@ fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, local_index
     // dir = align_direction(dir, light_dir);
 
     var ray: Ray;
-    ray.origin = ls_pos;
+    ray.origin = ls_pos + light_dir * environment.shadow_bias;
     ray.direction = dir;
 
     let occluded = raymarch_shadow(ray, local_index);
@@ -143,8 +145,7 @@ struct Ray {
 
 fn raymarch_shadow(ray: Ray, local_index: u32) -> bool {
     var dir = ray.direction;
-    // let inv_dir = sign(dir) / max(vec3(1e-7), abs(dir));
-    let inv_dir = 1.0 / -abs(dir);
+    let inv_dir = -1.0 / max(abs(dir), vec3(1e-8));
 
     let scale = 1.0 / f32(scene.bounding_size);
     var origin = ray.origin * scale + 1.0;
@@ -185,9 +186,9 @@ fn raymarch_shadow(ray: Ray, local_index: u32) -> bool {
         var adv_scale_exp = scale_exp;
 
         let snapped_idx = child_offset & 0x2Au;
-        if ((chunk.mask[snapped_idx >> 5u] >> (snapped_idx & 31u)) & 0x00330033u) == 0u {
-            adv_scale_exp++;
-        }
+        let sub_chunk_empty = ((chunk.mask[snapped_idx >> 5u] >> (snapped_idx & 31u)) & 0x00330033u) == 0u;
+        adv_scale_exp += u32(sub_chunk_empty);
+
         let edge_pos = floor_scale(pos, adv_scale_exp);
 
         side_distance = (edge_pos - origin) * inv_dir;
@@ -276,11 +277,11 @@ fn chunk_contains_child(mask: array<u32, 2>, offset: u32) -> bool {
 
 /// given mask and index i, gets packed offset based on count of 1s in mask for 0 <= j < i
 fn mask_packed_offset(mask: array<u32, 2>, i: u32) -> u32 {
-    if i < 32u {
-        return countOneBits(mask[0] & ~(0xffffffffu << i));
-    } else {
-        return countOneBits(mask[0]) + countOneBits(mask[1] & ~(0xffffffffu << (i - 32u)));
-    }
+    return select(
+        countOneBits(mask[0]) + countOneBits(mask[1] & ~(0xffffffffu << (i - 32u))),
+        countOneBits(mask[0] & ~(0xffffffffu << i)),
+        i < 32u
+    );
 }
 
 fn chunk_is_leaf(child_index: u32) -> bool {
@@ -331,14 +332,18 @@ struct Voxel {
     ws_normal: vec3<f32>,
     metallic: f32,
     roughness: f32,
-    hit_mask: vec3<bool>,
+    ls_hit_normal: vec3<f32>,
 }
 fn unpack_voxel(packed: u32) -> Voxel {
     var res: Voxel;
     res.ws_normal = decode_normal_octahedral(packed >> 11u);
     res.metallic = f32((packed >> 10u) & 1u);
     res.roughness = f32((packed >> 6u) & 15u) / 16.0;
-    res.hit_mask = decode_hit_mask((packed >> 3u) & 7u);
+
+    let hit_mask = decode_hit_mask((packed >> 3u) & 7u);
+    let ray_dir_sign = vec3<f32>(decode_hit_mask(packed & 7u)) * 2.0 - 1.0;
+    res.ls_hit_normal = normalize(-ray_dir_sign * vec3<f32>(hit_mask));
+
     return res;
 }
 
@@ -434,13 +439,16 @@ fn unpack_voxel_pos(packed: vec2<u32>) -> vec3<u32> {
     );
 }
 
+// TODO this will start to overflow if we have > ~8 million leaf index chunks
 fn get_voxel_position(map_val: u32) -> vec3<u32> {
     let ci = map_val >> 6u;
+    let chunk_pos = unpack_voxel_pos(index_leaf_positions[ci]);
 
-    var voxel_pos = unpack_voxel_pos(index_leaf_positions[ci]);
-    voxel_pos.x += map_val & 3u;
-    voxel_pos.z += (map_val >> 2u) & 3u;
-    voxel_pos.y += (map_val >> 4u) & 3u;
+    let voxel_offset = vec3<u32>(
+        map_val & 3u,
+        (map_val >> 4u) & 3u,
+        (map_val >> 2u) & 3u,
+    );
 
-    return voxel_pos;
+    return chunk_pos + voxel_offset;
 }

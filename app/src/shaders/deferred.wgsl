@@ -127,7 +127,7 @@ fn compute_main(in: ComputeIn) {
                 color += depth * 0.005;
             }
             case 3u {
-                // todo
+                color += voxel.ls_hit_normal;
             }
             case 4u {
                 color += voxel.ws_normal;
@@ -305,14 +305,18 @@ struct Voxel {
     ws_normal: vec3<f32>,
     metallic: f32,
     roughness: f32,
-    hit_mask: vec3<bool>,
+    ls_hit_normal: vec3<f32>,
 }
 fn unpack_voxel(packed: u32) -> Voxel {
     var res: Voxel;
     res.ws_normal = decode_normal_octahedral(packed >> 11u);
     res.metallic = f32((packed >> 10u) & 1u);
     res.roughness = f32((packed >> 6u) & 15u) / 16.0;
-    res.hit_mask = decode_hit_mask((packed >> 3u) & 7u);
+
+    let hit_mask = decode_hit_mask((packed >> 3u) & 7u);
+    let ray_dir_sign = vec3<f32>(decode_hit_mask(packed & 7u)) * 2.0 - 1.0;
+    res.ls_hit_normal = normalize(-ray_dir_sign * vec3<f32>(hit_mask));
+
     return res;
 }
 

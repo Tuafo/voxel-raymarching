@@ -23,7 +23,7 @@ impl Default for Config {
             render_scale: 0.5,
             sun_azimuth: -2.5,
             sun_altitude: 1.3,
-            shadow_bias: 0.0005,
+            shadow_bias: 5.0,
             shadow_spread: 0.05,
             filter_shadows: true,
             shadow_filter_radius: 7.0,
