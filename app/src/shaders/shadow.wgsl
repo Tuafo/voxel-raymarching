@@ -2,6 +2,11 @@
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
+@group(1) @binding(2) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
+
+// current frame per-voxel shadow values
+// occluded_count (16 bits) | visible_count (16 bits)
+@group(1) @binding(3) var<storage, read_write> voxel_lighting: array<atomic<u32>>;
 
 struct VoxelSceneMetadata {
     bounding_size: u32,
@@ -17,8 +22,6 @@ struct IndexChunk {
 @group(2) @binding(2) var<storage, read> index_leaf_positions: array<vec2<u32>>;
 @group(2) @binding(3) var tex_noise: texture_3d<f32>;
 @group(2) @binding(4) var sampler_noise: sampler;
-@group(2) @binding(5) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
-@group(2) @binding(6) var<storage, read_write> voxel_lighting: array<atomic<u32>>; // one per voxel entry right now
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -100,9 +103,13 @@ fn compute_main(in: ComputeIn) {
 
     let noise = blue_noise(in.id.xy);
 
+    var lighting_incr: u32;
     if trace_shadow(pos, noise, voxel_pos, in.local_index) {
-        atomicStore(&voxel_lighting[map_val.value], 1u);
+        lighting_incr = 0x00010001u;
+    } else {
+        lighting_incr = 1u;
     }
+    atomicAdd(&voxel_lighting[map_val.value], lighting_incr);
     // if res {
     //     let index = (7 - in.thread_id.x) + (in.thread_id.y << 3u);
     //     atomicOr(&results, 1u << index);
@@ -122,7 +129,7 @@ fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, local_index
     let light_tangent = normalize(cross(light_dir, vec3(0.0, 0.0, 1.0)));
     let light_bitangent = normalize(cross(light_tangent, light_dir));
 
-    let disk_point = (noise.xy * 2.0 - 1.0) * environment.shadow_spread * 0.0001;
+    let disk_point = (noise.xy * 2.0 - 1.0) * environment.shadow_spread;
     let dir = normalize(light_dir + disk_point.x * light_tangent + disk_point.y * light_bitangent);
 
     // var dir = rand_hemisphere_direction(noise.xy, environment.shadow_spread);
@@ -132,10 +139,7 @@ fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, local_index
     ray.origin = ls_pos + light_dir * environment.shadow_bias;
     ray.direction = dir;
 
-    let occluded = raymarch_shadow(ray, local_index);
-    // let occluded = false;
-    return !occluded;
-    // return select(1.0, 0.0, occluded);
+    return raymarch_shadow(ray, local_index);
 }
 
 struct Ray {

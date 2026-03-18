@@ -4,6 +4,7 @@
 
 @group(1) @binding(0) var tex_out_normal: texture_storage_2d<r32uint, write>;
 @group(1) @binding(1) var tex_out_depth: texture_storage_2d<r32float, write>;
+@group(1) @binding(2) var<storage, read_write> voxel_map: array<atomic<u32>>; // two words (key, value) per entry
 
 struct VoxelSceneMetadata {
     bounding_size: u32,
@@ -29,8 +30,6 @@ struct VoxelInfo {
 }
 @group(2) @binding(6) var<storage, read_write> voxel_info: VoxelInfo;
 @group(2) @binding(7) var<storage, read_write> visibility_mask: array<atomic<u32>>;
-@group(2) @binding(8) var<storage, read_write> voxel_map: array<atomic<u32>>; // two words (key, value) per entry
-// @group(2) @binding(8) var<storage, read_write> visible_voxel_queue: array<vec2<u32>>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -364,7 +363,7 @@ fn chunk_contains_child(mask: array<u32, 2>, offset: u32) -> bool {
     return (half_mask & (1u << (offset & 31u))) != 0u;
 }
 
-/// given mask and index i, gets packed offset based on count of 1s in mask for 0 <= j < i 
+/// given mask and index i, gets packed offset based on count of 1s in mask for 0 <= j < i
 fn mask_packed_offset(mask: array<u32, 2>, i: u32) -> u32 {
     return select(
         countOneBits(mask[0]) + countOneBits(mask[1] & ~(0xffffffffu << (i - 32u))),

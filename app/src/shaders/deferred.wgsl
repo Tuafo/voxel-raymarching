@@ -8,8 +8,8 @@ override dielectric_specular: f32 = 0.04;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
-// @group(1) @binding(2) var tex_illumination: texture_2d<f32>;
-// @group(1) @binding(3) var tex_specular: texture_2d<f32>;
+@group(1) @binding(2) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
+@group(1) @binding(3) var<storage, read> voxel_lighting: array<f32>;
 
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var sampler_noise: sampler;
@@ -17,8 +17,6 @@ override dielectric_specular: f32 = 0.04;
 @group(2) @binding(3) var tex_irradiance: texture_cube<f32>;
 @group(2) @binding(4) var tex_prefilter: texture_cube<f32>;
 @group(2) @binding(5) var tex_brdf_lut: texture_2d<f32>;
-@group(2) @binding(6) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
-@group(2) @binding(7) var<storage, read> voxel_lighting: array<u32>; // one per voxel entry right now
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -85,7 +83,7 @@ fn compute_main(in: ComputeIn) {
 
     var shadow = 0.0;
     if map_val.exists {
-        shadow = f32(voxel_lighting[map_val.value]);
+        shadow = 1.0 - voxel_lighting[map_val.value];
     }
 
     let velocity = textureLoad(tex_velocity, pos).rg;
