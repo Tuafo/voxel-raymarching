@@ -1,5 +1,14 @@
+use crate::{
+    lightmap::{LIGHTMAPS, LightmapEntry},
+    models::{MODELS, ModelEntry},
+};
+
 #[derive(Debug)]
 pub struct Config {
+    pub init_scene: ModelEntry,
+    pub init_skybox: LightmapEntry,
+    pub init_camera_pos: glam::DVec3,
+    pub voxel_scale: u32,
     pub render_scale: f32,
     pub sun_altitude: f32,
     pub sun_azimuth: f32,
@@ -20,10 +29,15 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            init_scene: MODELS.bistro,
+            init_skybox: LIGHTMAPS.partly_cloudy,
+            // init_camera_pos: glam::dvec3(9.0, 14.0, 5.0),
+            init_camera_pos: glam::dvec3(30.0, 55.0, 8.0),
+            voxel_scale: 1,
             render_scale: 0.5,
             sun_azimuth: -2.5,
             sun_altitude: 1.3,
-            shadow_bias: 5.0,
+            shadow_bias: 3.2,
             shadow_spread: 0.05,
             filter_shadows: true,
             shadow_filter_radius: 7.0,

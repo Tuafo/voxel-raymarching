@@ -1,21 +1,11 @@
-use std::sync::Arc;
-
-use crate::{
-    SizedWindow,
-    config::Config,
-    ui::{debug::DebugWindow, settings::SettingsView},
-};
-use egui::epaint::{
-    CornerRadiusF32,
-    text::{FontInsert, InsertFontFamily},
-};
+use crate::{SizedWindow, config::Config, ui::debug::DebugWindow};
+use egui::epaint::text::{FontInsert, InsertFontFamily};
 use egui_wgpu::wgpu::StoreOp;
 use egui_wgpu::{Renderer, RendererOptions, wgpu};
 use egui_winit::State;
 
 pub struct Ui {
     pub debug: DebugWindow,
-    pub settings: SettingsView,
     renderer: Renderer,
     window_state: State,
     frame_started: bool,
@@ -38,10 +28,10 @@ impl Ui {
     ) -> Self {
         let ctx = egui::Context::default();
 
-        ctx.global_style_mut(|style| {
-            style.visuals.window_corner_radius = egui::CornerRadius::ZERO;
-            style.visuals.window_shadow = egui::Shadow::NONE;
-        });
+        // ctx.global_style_mut(|style| {
+        //     style.visuals.window_corner_radius = egui::CornerRadius::ZERO;
+        //     style.visuals.window_shadow = egui::Shadow::NONE;
+        // });
 
         ctx.add_font(FontInsert::new(
             "figtree",
@@ -67,7 +57,6 @@ impl Ui {
             renderer,
             frame_started: false,
             debug: DebugWindow::new(),
-            settings: Default::default(),
         }
     }
 

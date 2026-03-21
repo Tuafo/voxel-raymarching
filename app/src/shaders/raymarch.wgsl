@@ -27,9 +27,19 @@ struct VoxelInfo {
     visible_count: atomic<u32>,
     failed_to_add: atomic<u32>,
 }
+struct VisibleVoxel {
+    data: u32,
+    leaf_index: u32,
+    pos: array<u32, 2>,
+}
+
+/// allocator info for visible voxels
 @group(2) @binding(6) var<storage, read_write> voxel_info: VoxelInfo;
-@group(2) @binding(7) var<storage, read_write> visibility_mask: array<atomic<u32>>;
-@group(2) @binding(8) var<storage, read_write> voxel_map: array<atomic<u32>>; // two words (key, value) per entry
+
+/// two words (key, value) per entry. keyed by the leaf index, and values are indices into the visible_voxels
+/// each value for the current fragment is also written to the red channel of voxel_id in the gbuffer
+@group(2) @binding(7) var<storage, read_write> voxel_map: array<atomic<u32>>;
+@group(2) @binding(8) var<storage, read_write> visible_voxels: array<VisibleVoxel>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -84,7 +94,7 @@ fn compute_main(in: ComputeIn) {
     let res = trace_scene(pos, in.local_index);
 
     textureStore(tex_out_albedo, pos, vec4(res.albedo, 1.0));
-    textureStore(tex_out_id, pos, vec4(res.voxel_id, 0, 0));
+    textureStore(tex_out_id, pos, vec4(res.visible_index, 0, 0));
     textureStore(tex_out_normal, pos, vec4(res.normal, 0, 0, 0));
     textureStore(tex_out_depth, pos, vec4(res.depth, 0.0, 0.0, 1.0));
     textureStore(tex_out_velocity, pos, vec4(res.velocity, 0.0, 1.0));
@@ -95,7 +105,7 @@ struct SceneResult {
     normal: u32,
     depth: f32,
     velocity: vec2<f32>,
-    voxel_id: vec2<u32>,
+    visible_index: vec2<u32>,
 }
 
 fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
@@ -109,24 +119,35 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let ray = start_ray(ray_uv);
     let hit = raymarch(start_ray(ray_uv), local_index);
 
-    if hit.hit {
-        map_insert(hit.leaf_index);
-        // if atomicOr(&visibility_mask[ray.leaf_index >> 3u], 1u << (ray.leaf_index & 7u)) == 0u {
-        // set visibility bitmask
-        //     let queue_index = atomicAdd(&voxel_info.visible_count, 1u);
-
-        //     let voxel_pos = vec3<u32>(ray.local_pos);
-        //     let packed = pack_voxel_pos(voxel_pos);
-        //     visible_voxel_queue[queue_index] = packed;
-        // }
-    } else {
+    if !hit.hit {
         var res: SceneResult;
+        res.visible_index = vec2(0);
         res.albedo = vec3(1.0, 0.0, 0.0);
         res.normal = 0u;
         res.depth = -1.0;
         res.velocity = vec2(0.0);
         return res;
     }
+
+    let map_result = map_insert(hit.leaf_index);
+    let visible_index = map_result.value;
+
+    // if map_result.inserted {
+    //     visible_voxels[visible_index] = hit.}
+    // if hit.hit {
+    //     let res = map_insert(hit.leaf_index);
+    //     if res.inserted {
+    //         visible_voxel_pos[res.value] = hit.id;
+    //     }
+    //     // if atomicOr(&visibility_mask[ray.leaf_index >> 3u], 1u << (ray.leaf_index & 7u)) == 0u {
+    //     // set visibility bitmask
+    //     //     let queue_index = atomicAdd(&voxel_info.visible_count, 1u);
+
+    //     //     let voxel_pos = vec3<u32>(ray.local_pos);
+    //     //     let packed = pack_voxel_pos(voxel_pos);
+    //     //     visible_voxel_queue[queue_index] = packed;
+    //     // }
+    // }
 
     let voxel = unpack_voxel(leaf_chunks[hit.leaf_index]);
 
@@ -154,9 +175,15 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, hit.hit_mask, ray.direction);
     // let packed = repack_voxel(ws_normal,1.0, 0.04, ray.hit_mask);
 
+    var visible: VisibleVoxel;
+    visible.data = packed;
+    visible.leaf_index = hit.leaf_index;
+    visible.pos = pack_voxel_pos(vec3<u32>(hit.local_pos));
+    visible_voxels[visible_index] = visible;
+
     var res: SceneResult;
     res.albedo = albedo;
-    res.voxel_id = vec2<u32>(hit.leaf_index, hit.id);
+    res.visible_index = vec2<u32>(hit.leaf_index, hit.id);
     res.normal = packed;
     res.depth = depth;
     res.velocity = velocity;
@@ -292,7 +319,12 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
 /// ------------------------------------------------------
 /// -------------------- map utils -----------------------
 
-fn map_insert(key: u32) -> bool {
+struct MapResult {
+    inserted: bool,
+    value: u32,
+}
+
+fn map_insert(key: u32) -> MapResult {
     let n = arrayLength(&voxel_map) >> 1u;
 
     var index = (hash_murmur3(key) % n) << 1u;
@@ -301,10 +333,14 @@ fn map_insert(key: u32) -> bool {
         if res.exchanged {
             let value = atomicAdd(&voxel_info.visible_count, 1u);
             atomicStore(&voxel_map[index + 1u], value); // this doesn't need to be atomic, it's pretty cheap though
-            return true;
+
+            var res: MapResult;
+            res.inserted = true;
+            res.value = value;
+            return res;
         }
         if res.old_value == key {
-            return false;
+            return MapResult();
         }
         index += 2u;
     }
@@ -312,21 +348,21 @@ fn map_insert(key: u32) -> bool {
     // for tracking
     // and dynamic resizing in the future
     atomicAdd(&voxel_info.failed_to_add, 1u);
-    return false;
+    return MapResult();
 }
 
-fn pack_voxel_pos(pos: vec3<u32>) -> vec2<u32> {
-    return vec2<u32>(
+fn pack_voxel_pos(pos: vec3<u32>) -> array<u32, 2> {
+    return array<u32, 2>(
         ((pos.z & 0xFFFFFu) << 10u) | ((pos.y >> 10u) & 0x3FFu),
         ((pos.y & 0x3FFu) << 20u) | (pos.x & 0xFFFFFu),
     );
 }
 
-fn unpack_voxel_pos(packed: vec2<u32>) -> vec3<u32> {
+fn unpack_voxel_pos(packed: array<u32, 2>) -> vec3<u32> {
     return vec3<u32>(
-        packed.y & 0xFFFFFu,
-        ((packed.x & 0x3FFu) << 10u) | (packed.y >> 20u),
-        packed.x >> 10u,
+        packed[1] & 0xFFFFFu,
+        ((packed[0] & 0x3FFu) << 10u) | (packed[1] >> 20u),
+        packed[0] >> 10u,
     );
 }
 

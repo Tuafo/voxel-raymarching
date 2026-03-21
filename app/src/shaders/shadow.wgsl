@@ -1,7 +1,7 @@
-@group(0) @binding(0) var tex_voxel_id: texture_storage_2d<rg32uint, read>;
+// @group(0) @binding(0) var tex_voxel_id: texture_storage_2d<rg32uint, read>;
 
-@group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
-@group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
+// @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
+// @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
 
 struct VoxelSceneMetadata {
     bounding_size: u32,
@@ -12,16 +12,21 @@ struct IndexChunk {
     child_index: u32,
     mask: array<u32, 2>,
 }
-@group(2) @binding(0) var<uniform> scene: VoxelSceneMetadata;
-@group(2) @binding(1) var<storage, read> index_chunks: array<IndexChunk>;
-@group(2) @binding(2) var<storage, read> index_leaf_positions: array<vec2<u32>>;
-@group(2) @binding(3) var tex_noise: texture_3d<f32>;
-@group(2) @binding(4) var sampler_noise: sampler;
-@group(2) @binding(5) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
+struct VisibleVoxel {
+    data: u32,
+    leaf_index: u32,
+    pos: array<u32, 2>,
+}
+@group(0) @binding(0) var<uniform> scene: VoxelSceneMetadata;
+@group(0) @binding(1) var<storage, read> index_chunks: array<IndexChunk>;
+@group(0) @binding(2) var tex_noise: texture_3d<f32>;
+@group(0) @binding(3) var sampler_noise: sampler;
+
+@group(0) @binding(4) var<storage, read> visible_voxels: array<VisibleVoxel>;
 
 // current frame per-voxel shadow values
 // occluded_count (16 bits) | visible_count (16 bits)
-@group(2) @binding(6) var<storage, read_write> voxel_lighting: array<atomic<u32>>;
+@group(0) @binding(5) var<storage, read_write> voxel_lighting: array<atomic<u32>>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -57,9 +62,9 @@ struct Model {
     normal_transform: mat3x3<f32>,
     inv_normal_transform: mat3x3<f32>,
 }
-@group(3) @binding(0) var<uniform> environment: Environment;
-@group(3) @binding(1) var<uniform> frame: FrameMetadata;
-@group(3) @binding(2) var<uniform> model: Model;
+@group(1) @binding(0) var<uniform> environment: Environment;
+@group(1) @binding(1) var<uniform> frame: FrameMetadata;
+@group(1) @binding(2) var<uniform> model: Model;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
@@ -68,31 +73,27 @@ struct ComputeIn {
 
 var<workgroup> stack: array<array<u32, 11>, 64>;
 
-@compute @workgroup_size(8, 4, 1)
+@compute @workgroup_size(64, 1, 1)
 fn compute_main(in: ComputeIn) {
-    let pos = vec2<i32>(in.id.xy);
-    let dimensions = vec2<i32>(textureDimensions(tex_depth).xy);
-    let texel_size = 1.0 / vec2<f32>(dimensions);
-
-    let uv = (vec2<f32>(pos) + 0.5) * texel_size;
-    let uv_jittered = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
-
-    let ray_length = textureLoad(tex_depth, pos).r;
-    if ray_length < 0.0 {
-        // primary ray missed
+    let visible = visible_voxels[in.id.x];
+    if visible.data == 0u {
         return;
     }
 
-    let voxel_id = textureLoad(tex_voxel_id, pos).rg;
-    let map_val = map_get(voxel_id.r);
-    if !map_val.exists {
-        return;
-    }
+    let voxel = unpack_voxel(visible.data);
+    let voxel_pos = unpack_voxel_pos(visible.pos);
+    let voxel_center = vec3<f32>(voxel_pos) + 0.5;
 
-    let packed = textureLoad(tex_normal, pos).r;
-    let voxel = unpack_voxel(packed);
+    // let voxel_id = textureLoad(tex_voxel_id, pos).rg;
+    // let map_val = map_get(voxel_id.r);
+    // if !map_val.exists {
+    //     return;
+    // }
 
-    var voxel_pos = vec3<f32>(get_voxel_position(voxel_id.g)) + 0.5;
+    // let packed = textureLoad(tex_normal, pos).r;
+    // let voxel = unpack_voxel(packed);
+
+    // var voxel_pos = vec3<f32>(get_voxel_position(voxel_id.g)) + 0.5;
     // voxel_pos += (0.5 + environment.shadow_bias * 20.0) * voxel.ls_hit_normal;
 
     // let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
@@ -105,12 +106,12 @@ fn compute_main(in: ComputeIn) {
     // let noise = blue_noise(vec2<u32>(voxel_pos.xy));
 
     var lighting_incr: u32;
-    if trace_shadow(pos, noise, voxel_pos, in.local_index) {
+    if trace_shadow(noise, voxel_center, in.local_index) {
         lighting_incr = 0x00010001u;
     } else {
         lighting_incr = 1u;
     }
-    atomicAdd(&voxel_lighting[map_val.value], lighting_incr);
+    atomicAdd(&voxel_lighting[in.id.x], lighting_incr);
     // if res {
     //     let index = (7 - in.thread_id.x) + (in.thread_id.y << 3u);
     //     atomicOr(&results, 1u << index);
@@ -124,7 +125,7 @@ fn compute_main(in: ComputeIn) {
     // }
 }
 
-fn trace_shadow(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, local_index: u32) -> bool {
+fn trace_shadow(noise: vec3<f32>, ls_pos: vec3<f32>, local_index: u32) -> bool {
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
 
     let light_tangent = normalize(cross(light_dir, vec3(0.0, 0.0, 1.0)));
@@ -378,83 +379,24 @@ fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
 /// ------------------------------------------------------
 /// -------------------- map utils -----------------------
 
-struct MapResult {
-    exists: bool,
-    value: u32,
-}
-
-fn map_get(id: u32) -> MapResult {
-    let n = arrayLength(&voxel_map) >> 1u;
-
-    var key = hash_murmur3(id) % n;
-    for (var i = 0u; i < 4u; i++) {
-        if voxel_map[key << 1u] == id {
-            var res: MapResult;
-            res.exists = true;
-            res.value = voxel_map[(key << 1u) + 1u];
-            return res;
-        }
-        key += 1u;
-        if key >= n {
-            key = 0u;
-        }
-    }
-
-    var res: MapResult;
-    res.exists = false;
-    return res;
-}
-
-// from https://github.com/aappleby/smhasher
-fn hash_murmur3(seed: u32) -> u32 {
-    const C1: u32 = 0xcc9e2d51u;
-    const C2: u32 = 0x1b873593u;
-
-    var h = 0u;
-    var k = seed;
-
-    k *= C1;
-    k = (k << 15u) | (k >> 17u);
-    k *= C2;
-
-    h ^= k;
-    h = (h << 13u) | (h >> 19u);
-    h = h * 5u + 0xe6546b64u;
-    h ^= 4u;
-
-    h ^= h >> 16;
-    h *= 0x85ebca6bu;
-    h ^= h >> 13;
-    h *= 0xc2b2ae35u;
-    h ^= h >> 16;
-    return h;
-}
-
-fn pack_voxel_pos(pos: vec3<u32>) -> vec2<u32> {
-    return vec2<u32>(
-        ((pos.z & 0xFFFFFu) << 10u) | ((pos.y >> 10u) & 0x3FFu),
-        ((pos.y & 0x3FFu) << 20u) | (pos.x & 0xFFFFFu),
-    );
-}
-
-fn unpack_voxel_pos(packed: vec2<u32>) -> vec3<u32> {
+fn unpack_voxel_pos(packed: array<u32, 2>) -> vec3<u32> {
     return vec3<u32>(
-        packed.y & 0xFFFFFu,
-        ((packed.x & 0x3FFu) << 10u) | (packed.y >> 20u),
-        packed.x >> 10u,
+        packed[1] & 0xFFFFFu,
+        ((packed[0] & 0x3FFu) << 10u) | (packed[1] >> 20u),
+        packed[0] >> 10u,
     );
 }
 
-// TODO this will start to overflow if we have > ~8 million leaf index chunks
-fn get_voxel_position(map_val: u32) -> vec3<u32> {
-    let ci = map_val >> 6u;
-    let chunk_pos = unpack_voxel_pos(index_leaf_positions[ci]);
+// // TODO this will start to overflow if we have > ~8 million leaf index chunks
+// fn get_voxel_position(map_val: u32) -> vec3<u32> {
+//     let ci = map_val >> 6u;
+//     let chunk_pos = unpack_voxel_pos(index_leaf_positions[ci]);
 
-    let voxel_offset = vec3<u32>(
-        map_val & 3u,
-        (map_val >> 4u) & 3u,
-        (map_val >> 2u) & 3u,
-    );
+//     let voxel_offset = vec3<u32>(
+//         map_val & 3u,
+//         (map_val >> 4u) & 3u,
+//         (map_val >> 2u) & 3u,
+//     );
 
-    return chunk_pos + voxel_offset;
-}
+//     return chunk_pos + voxel_offset;
+// }

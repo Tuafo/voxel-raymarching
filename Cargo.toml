@@ -1,5 +1,5 @@
 [workspace]
-members = ["app", "generate"]
+members = ["app", "generate", "utils"]
 default-members = ["app"]
 resolver = "2"
 
@@ -14,6 +14,6 @@ panic = "abort"
 strip = true
 
 [patch.crates-io]
-egui = { git = "https://github.com/SuchAFuriousDeath/egui", branch = "update-wgpu-28" }
-egui-wgpu = { git = "https://github.com/SuchAFuriousDeath/egui", branch = "update-wgpu-28" }
-egui-winit = { git = "https://github.com/SuchAFuriousDeath/egui", branch = "update-wgpu-28" }
+egui = { git = "https://github.com/emilk/egui", rev = "8b2315375b6cf13291ee658a498cb45fc379f600" }
+egui-wgpu = { git = "https://github.com/emilk/egui", rev = "8b2315375b6cf13291ee658a498cb45fc379f600" }
+egui-winit = { git = "https://github.com/emilk/egui", rev = "8b2315375b6cf13291ee658a498cb45fc379f600" }

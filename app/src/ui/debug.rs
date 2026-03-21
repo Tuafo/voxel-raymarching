@@ -1,4 +1,4 @@
-use std::{f64::consts::PI, time::Duration};
+use std::time::Duration;
 
 use crate::{
     config::{DEBUG_VIEWS, DebugView},
@@ -143,9 +143,9 @@ impl DebugWindow {
                 ui.end_row();
 
                 if ui.button("Reload Scene").clicked() {
-                    let src = std::include_bytes!("../../assets/models/sponza.glb");
-                    let mut src = std::io::BufReader::new(std::io::Cursor::new(src));
-                    generate::voxelize(&mut src, ctx.device, ctx.queue, None).unwrap();
+                    // let src = std::include_bytes!("../../assets/models/sponza.glb");
+                    // let mut src = std::io::BufReader::new(std::io::Cursor::new(src));
+                    // generate::voxelize(&mut src, ctx.device, ctx.queue, None, 16).unwrap();
                 }
             });
 

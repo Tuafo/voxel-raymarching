@@ -20,9 +20,12 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
 name = "accesskit"
-version = "0.21.1"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf203f9d3bd8f29f98833d1fbef628df18f759248a547e7e01cfbf63cda36a99"
+checksum = "5351dcebb14b579ccab05f288596b2ae097005be7ee50a7c3d4ca9d0d5a66f6a"
+dependencies = [
+ "uuid",
+]
 
 [[package]]
 name = "adler2"
@@ -190,6 +193,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syn",
+ "utils",
  "wgpu",
  "winit",
 ]
@@ -806,7 +810,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ecolor"
 version = "0.33.3"
-source = "git+https://github.com/SuchAFuriousDeath/egui?branch=update-wgpu-28#cf4060c5bf142952c1a8c49a3f6aa4b5cbb0d6fc"
+source = "git+https://github.com/emilk/egui?rev=8b2315375b6cf13291ee658a498cb45fc379f600#8b2315375b6cf13291ee658a498cb45fc379f600"
 dependencies = [
  "bytemuck",
  "emath",
@@ -815,7 +819,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.33.3"
-source = "git+https://github.com/SuchAFuriousDeath/egui?branch=update-wgpu-28#cf4060c5bf142952c1a8c49a3f6aa4b5cbb0d6fc"
+source = "git+https://github.com/emilk/egui?rev=8b2315375b6cf13291ee658a498cb45fc379f600#8b2315375b6cf13291ee658a498cb45fc379f600"
 dependencies = [
  "accesskit",
  "ahash",
@@ -832,7 +836,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.33.3"
-source = "git+https://github.com/SuchAFuriousDeath/egui?branch=update-wgpu-28#cf4060c5bf142952c1a8c49a3f6aa4b5cbb0d6fc"
+source = "git+https://github.com/emilk/egui?rev=8b2315375b6cf13291ee658a498cb45fc379f600#8b2315375b6cf13291ee658a498cb45fc379f600"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -851,7 +855,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.33.3"
-source = "git+https://github.com/SuchAFuriousDeath/egui?branch=update-wgpu-28#cf4060c5bf142952c1a8c49a3f6aa4b5cbb0d6fc"
+source = "git+https://github.com/emilk/egui?rev=8b2315375b6cf13291ee658a498cb45fc379f600#8b2315375b6cf13291ee658a498cb45fc379f600"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -877,7 +881,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 [[package]]
 name = "emath"
 version = "0.33.3"
-source = "git+https://github.com/SuchAFuriousDeath/egui?branch=update-wgpu-28#cf4060c5bf142952c1a8c49a3f6aa4b5cbb0d6fc"
+source = "git+https://github.com/emilk/egui?rev=8b2315375b6cf13291ee658a498cb45fc379f600#8b2315375b6cf13291ee658a498cb45fc379f600"
 dependencies = [
  "bytemuck",
 ]
@@ -908,26 +912,28 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.33.3"
-source = "git+https://github.com/SuchAFuriousDeath/egui?branch=update-wgpu-28#cf4060c5bf142952c1a8c49a3f6aa4b5cbb0d6fc"
+source = "git+https://github.com/emilk/egui?rev=8b2315375b6cf13291ee658a498cb45fc379f600#8b2315375b6cf13291ee658a498cb45fc379f600"
 dependencies = [
  "ahash",
  "bytemuck",
  "ecolor",
  "emath",
  "epaint_default_fonts",
+ "font-types",
  "log",
  "nohash-hasher",
  "parking_lot",
  "profiling",
  "self_cell",
  "skrifa",
+ "smallvec",
  "vello_cpu",
 ]
 
 [[package]]
 name = "epaint_default_fonts"
 version = "0.33.3"
-source = "git+https://github.com/SuchAFuriousDeath/egui?branch=update-wgpu-28#cf4060c5bf142952c1a8c49a3f6aa4b5cbb0d6fc"
+source = "git+https://github.com/emilk/egui?rev=8b2315375b6cf13291ee658a498cb45fc379f600#8b2315375b6cf13291ee658a498cb45fc379f600"
 
 [[package]]
 name = "equator"
@@ -973,9 +979,9 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
 name = "euclid"
-version = "0.22.13"
+version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df61bf483e837f88d5c2291dcf55c67be7e676b3a51acc48db3a7b163b91ed63"
+checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
  "num-traits",
 ]
@@ -1064,9 +1070,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
-version = "0.10.1"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39a654f404bbcbd48ea58c617c2993ee91d1cb63727a37bf2323a4edeed1b8c5"
+checksum = "73829a7b5c91198af28a99159b7ae4afbb252fb906159ff7f189f3a2ceaa3df2"
 dependencies = [
  "bytemuck",
 ]
@@ -1149,6 +1155,7 @@ dependencies = [
  "rand 0.10.0",
  "serde",
  "serde_json",
+ "utils",
  "wgpu",
  "winit",
 ]
@@ -1614,9 +1621,9 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kurbo"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce9729cc38c18d86123ab736fd2e7151763ba226ac2490ec092d1dd148825e32"
+checksum = "7564e90fe3c0d5771e1f0bc95322b21baaeaa0d9213fa6a0b61c99f8b17b3bfb"
 dependencies = [
  "arrayvec",
  "euclid",
@@ -2313,9 +2320,9 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 
 [[package]]
 name = "peniko"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3c76095c9a636173600478e0373218c7b955335048c2bcd12dc6a79657649d8"
+checksum = "9a2b6aadb221872732e87d465213e9be5af2849b0e8cc5300a8ba98fffa2e00a"
 dependencies = [
  "bytemuck",
  "color",
@@ -2671,9 +2678,9 @@ dependencies = [
 
 [[package]]
 name = "read-fonts"
-version = "0.35.0"
+version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6717cf23b488adf64b9d711329542ba34de147df262370221940dfabc2c91358"
+checksum = "7b634fabf032fab15307ffd272149b622260f55974d9fad689292a5d33df02e5"
 dependencies = [
  "bytemuck",
  "font-types",
@@ -2903,9 +2910,9 @@ dependencies = [
 
 [[package]]
 name = "skrifa"
-version = "0.37.0"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c31071dedf532758ecf3fed987cdb4bd9509f900e026ab684b4ecb81ea49841"
+checksum = "7fbdfe3d2475fbd7ddd1f3e5cf8288a30eb3e5f95832829570cd88115a7434ac"
 dependencies = [
  "bytemuck",
  "read-fonts",
@@ -3274,6 +3281,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
+name = "utils"
+version = "0.1.0"
+dependencies = [
+ "wgpu",
+]
+
+[[package]]
+name = "uuid"
+version = "1.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a68d3c8f01c0cfa54a75291d83601161799e4a89a39e0929f4b0354d88757a37"
+
+[[package]]
 name = "v_frame"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3286,12 +3306,13 @@ dependencies = [
 
 [[package]]
 name = "vello_common"
-version = "0.0.4"
+version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a235ba928b3109ad9e7696270edb09445a52ae1c7c08e6d31a19b1cdd6cbc24a"
+checksum = "1bd1a4c633ce09e7d713df1a6e036644a125e15e0c169cfb5180ddf5836ca04b"
 dependencies = [
  "bytemuck",
  "fearless_simd",
+ "hashbrown 0.16.1",
  "log",
  "peniko",
  "skrifa",
@@ -3300,11 +3321,12 @@ dependencies = [
 
 [[package]]
 name = "vello_cpu"
-version = "0.0.4"
+version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0bd1fcf9c1814f17a491e07113623d44e3ec1125a9f3401f5e047d6d326da21"
+checksum = "0162bfe48aabf6a9fdcd401b628c7d9f260c2cbabb343c70a65feba6f7849edc"
 dependencies = [
  "bytemuck",
+ "hashbrown 0.16.1",
  "vello_common",
 ]
 

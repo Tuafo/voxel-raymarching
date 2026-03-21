@@ -21,6 +21,10 @@ struct Args {
     /// Generate specific models from `app/assets/lightmaps`
     #[arg(short, long)]
     lightmaps: bool,
+
+    /// Voxel scale, in voxels/meter. Larger values generate more voxels.
+    #[arg(short, long, default_value_t = 16)]
+    scale: u32,
 }
 
 fn main() -> Result<()> {
@@ -52,8 +56,14 @@ fn main() -> Result<()> {
         }
 
         for src in &sources {
-            voxelize_model(&device, &queue, src, Path::new("app/assets/generated"))
-                .context(format!("error voxelizing model {}", src.name))?;
+            voxelize_model(
+                &device,
+                &queue,
+                src,
+                Path::new("app/assets/generated"),
+                args.scale,
+            )
+            .context(format!("error voxelizing model {}", src.name))?;
         }
     }
 
@@ -183,11 +193,18 @@ fn voxelize_model(
     queue: &wgpu::Queue,
     src: &AssetSource,
     out_dir: &Path,
+    voxels_per_unit: u32,
 ) -> Result<()> {
     let glb = fs::File::open(&src.path)?;
     let mut reader = io::BufReader::new(&glb);
-    let data = voxelize(&mut reader, &device, &queue, Some(src.name.clone()))
-        .context("failed to voxelize model")?;
+    let data = voxelize(
+        &mut reader,
+        &device,
+        &queue,
+        Some(src.name.clone()),
+        voxels_per_unit,
+    )
+    .context("failed to voxelize model")?;
     let data = data
         .serialize(&device, &queue)
         .context("failed to serialize voxel tree")?;

@@ -1,4 +1,9 @@
-@group(0) @binding(0) var<storage, read> voxel_map: array<u32>; // voxel hashmap, two words (key, value) per entry
+struct VisibleVoxel {
+    data: u32,
+    leaf_index: u32,
+    pos: array<u32, 2>,
+}
+@group(0) @binding(0) var<storage, read> visible_voxels: array<VisibleVoxel>;
 @group(0) @binding(1) var<storage, read> cur_voxel_lighting: array<u32>;
 @group(0) @binding(2) var<storage, read_write> acc_voxel_lighting: array<u32>;
 
@@ -46,21 +51,16 @@ struct ComputeIn {
 
 var<workgroup> stack: array<array<u32, 11>, 64>;
 
-const MAX_HISTORY_LENGTH: u32 = 64u;
+const MAX_HISTORY_LENGTH: u32 = 128u;
 
 @compute @workgroup_size(256, 1, 1)
 fn compute_main(in: ComputeIn) {
-    let key = voxel_map[in.id.x << 1u];
-    if key == 0u {
+    let visible = visible_voxels[in.id.x];
+    if visible.data == 0u {
         return;
     }
 
-    let index = voxel_map[(in.id.x << 1u) | 1u];
-    if index == 0u {
-        return;
-    }
-
-    let cur = cur_voxel_lighting[index];
+    let cur = cur_voxel_lighting[in.id.x];
     let cur_visible = cur & 0xFFFFu;
     if cur_visible == 0u {
         return;
@@ -68,7 +68,7 @@ fn compute_main(in: ComputeIn) {
     let cur_shadow_count = min(cur_visible, cur >> 16u);
     let cur_shadow = f32(cur_shadow_count) / f32(cur_visible);
 
-    let acc = acc_voxel_lighting[key];
+    let acc = acc_voxel_lighting[visible.leaf_index];
     let acc_shadow = f32(acc >> 8u) / 16777215.0;
     let history_len = min(MAX_HISTORY_LENGTH, (acc & 0xFFu) + 1u);
 
@@ -76,32 +76,5 @@ fn compute_main(in: ComputeIn) {
     let res_shadow = mix(acc_shadow, cur_shadow, alpha);
 
     let res = ((u32(res_shadow * 16777215.0) & 0xFFFFFFu) << 8u) | history_len;
-    acc_voxel_lighting[key] = res;
-    // let res_length = min(MAX_HISTORY_LENGTH, acc_length + cur_length);
-    // let res_shadow = f32(cur_shadow_count + acc_shadow_count) / f32(cur_length + acc_length);
-    // let res_shadow_count = u32(ceil(res_shadow * f32(res_length)));
-    // if acc_length + cur_length > MAX_HISTORY_LENGTH {
-    //     return;
-    // }
-
-    // let res_length = min(MAX_HISTORY_LENGTH, acc_length + cur_length);
-
-
-    // if cur_visible_count >= MAX_HISTORY_LENGTH {
-    //     let diff = cur_visible_count - MAX_HISTORY_LENGTH;
-    //     let shadow = f32(cur_shadow_count) / f32(cur_visible_count);
-    //     cur_shadow_count -= u32(round(shadow * f32(diff)));
-    //     cur_visible_count -= diff;
-    // }
-
-
-    // if acc_length + cur_visible_count >= MAX_HISTORY_LENGTH {
-    //     let diff = acc_length - MAX_HISTORY_LENGTH + cur_visible_count;
-    //     let shadow = f32(acc_shadow_count) / f32(acc_length);
-    //     acc_shadow_count -= u32(round(shadow * f32(diff)));
-    //     acc_length -= diff;
-    // }
-    // acc_length += cur_visible_count;
-    // acc_shadow_count += cur_shadow_count;
-
+    acc_voxel_lighting[visible.leaf_index] = res;
 }
