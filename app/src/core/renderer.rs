@@ -28,6 +28,7 @@ use utils::{
 
 define_shaders! {
     raymarch "../shaders/raymarch.wgsl",
+    visible_indirect_args "../shaders/visible_indirect_args.wgsl",
     shadow "../shaders/shadow.wgsl",
     ambient "../shaders/ambient.wgsl",
     specular "../shaders/specular.wgsl",
@@ -69,9 +70,10 @@ pub struct Renderer {
 
 struct Pipelines {
     raymarch: wgpu::ComputePipeline,
+    visible_indirect_args: wgpu::ComputePipeline,
     shadow: wgpu::ComputePipeline,
     resolve: wgpu::ComputePipeline,
-    // ambient: wgpu::ComputePipeline,
+    ambient: wgpu::ComputePipeline,
     // specular: wgpu::ComputePipeline,
     // lighting_resolve: wgpu::ComputePipeline,
     // atrous: wgpu::ComputePipeline,
@@ -85,6 +87,7 @@ struct BindGroupLayouts {
     raymarch_gbuffer: wgpu::BindGroupLayout,
     raymarch_swap: wgpu::BindGroupLayout,
     raymarch_static: wgpu::BindGroupLayout,
+    visible_indirect_args: wgpu::BindGroupLayout,
     // shadow_gbuffer: wgpu::BindGroupLayout,
     // ambient_gbuffer: wgpu::BindGroupLayout,
     // shadow_swap: wgpu::BindGroupLayout,
@@ -108,6 +111,7 @@ struct BindGroups {
     raymarch_gbuffer: Option<wgpu::BindGroup>,
     raymarch_swap: Option<SwapchainBindGroup>,
     raymarch_static: wgpu::BindGroup,
+    visible_indirect_args: wgpu::BindGroup,
     // shadow_gbuffer: Option<wgpu::BindGroup>,
     // ambient_gbuffer: Option<wgpu::BindGroup>,
     // shadow_swap: Option<SwapchainBindGroup>,
@@ -161,6 +165,7 @@ struct Buffers {
     // voxel_visibility_mask: wgpu::Buffer,
     voxel_map: wgpu::Buffer,
     visible_voxels: wgpu::Buffer,
+    visible_indirect_args: wgpu::Buffer,
     cur_voxel_lighting: wgpu::Buffer,
     acc_voxel_lighting: wgpu::Buffer,
     frame_metadata: wgpu::Buffer,
@@ -189,7 +194,7 @@ impl Renderer {
                 (
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().write_only(),
-                    storage_texture().rg32uint().dimension_2d().write_only(),
+                    storage_texture().r32uint().dimension_2d().write_only(),
                 ),
             ),
             raymarch_swap: device.layout(
@@ -214,6 +219,11 @@ impl Renderer {
                     storage_buffer().read_write(),
                     storage_buffer().read_write(),
                 ),
+            ),
+            visible_indirect_args: device.layout(
+                "visible_indirect_args",
+                ShaderStages::COMPUTE,
+                (storage_buffer().read_only(), storage_buffer().read_write()),
             ),
             // shadow_gbuffer: device.layout(
             //     "shadow_gbuffer",
@@ -309,7 +319,7 @@ impl Renderer {
                     storage_texture().rgba16float().dimension_2d().write_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
                     storage_texture().rgba16float().dimension_2d().read_only(),
-                    storage_texture().rg32uint().dimension_2d().read_only(),
+                    storage_texture().r32uint().dimension_2d().read_only(),
                 ),
             ),
             deferred_swap: device.layout(
@@ -369,12 +379,15 @@ impl Renderer {
                     &bg_layouts.raymarch_static,
                     &bg_layouts.per_frame_shared,
                 ]),
-            shadow: device.compute_pipeline("shadow", &shaders.shadow).layout(&[
-                // &bg_layouts.shadow_gbuffer,
-                // &bg_layouts.shadow_swap,
-                &bg_layouts.shadow_static,
-                &bg_layouts.per_frame_shared,
-            ]),
+            visible_indirect_args: device
+                .compute_pipeline("visible_indirect_args", &shaders.visible_indirect_args)
+                .layout(&[&bg_layouts.visible_indirect_args]),
+            shadow: device
+                .compute_pipeline("shadow", &shaders.shadow)
+                .layout(&[&bg_layouts.shadow_static, &bg_layouts.per_frame_shared]),
+            ambient: device
+                .compute_pipeline("ambient", &shaders.ambient)
+                .layout(&[&bg_layouts.shadow_static, &bg_layouts.per_frame_shared]),
             resolve: device
                 .compute_pipeline("resolve", &shaders.resolve)
                 .layout(&[&bg_layouts.resolve]),
@@ -558,6 +571,12 @@ impl Renderer {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
+            visible_indirect_args: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("visible_indirect_args"),
+                size: 12,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+                mapped_at_creation: false,
+            }),
             cur_voxel_lighting: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("voxel_lighting"),
                 size: voxel_queue_len * 4,
@@ -655,6 +674,20 @@ impl Renderer {
                 ],
             }),
             raymarch_swap: None,
+            visible_indirect_args: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("visible_indirect_args"),
+                layout: &bg_layouts.visible_indirect_args,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffers.voxel_map_info.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buffers.visible_indirect_args.as_entire_binding(),
+                    },
+                ],
+            }),
             // shadow_gbuffer: None,
             // ambient_gbuffer: None,
             // shadow_swap: None,
@@ -858,7 +891,7 @@ impl Renderer {
             label: Some("gbuffer_voxel_id"),
             size,
             sample_count: 1,
-            format: wgpu::TextureFormat::Rg32Uint,
+            format: wgpu::TextureFormat::R32Uint,
             dimension: wgpu::TextureDimension::D2,
             usage: wgpu::TextureUsages::STORAGE_BINDING,
             mip_level_count: 1,
@@ -1629,7 +1662,6 @@ impl Renderer {
         let mut encoder = device.create_command_encoder(&Default::default());
 
         encoder.clear_buffer(&self.buffers.voxel_map_info, 0, None);
-        // encoder.clear_buffer(&self.buffers.voxel_visibility_mask, 0, None);
         encoder.clear_buffer(&self.buffers.voxel_map, 0, None);
         encoder.clear_buffer(&self.buffers.cur_voxel_lighting, 0, None);
 
@@ -1647,12 +1679,17 @@ impl Renderer {
             pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
         }
 
-        let visible_workgroups = self
-            .buffers
-            .voxel_map
-            .size()
-            .div_ceil(256 * 4 * 2)
-            .min(65535) as u32;
+        // copy over indirect args for the per-voxel dispatches
+        {
+            let mut pass =
+                encoder.begin_compute_pass_timed("Prepare Visibility Args", &mut self.timing);
+
+            pass.set_pipeline(&self.pipelines.visible_indirect_args);
+            pass.set_bind_group(0, &self.bind_groups.visible_indirect_args, &[]);
+
+            pass.insert_debug_marker("visible indirect args");
+            pass.dispatch_workgroups(1, 1, 1);
+        }
 
         // shadow pass
         {
@@ -1665,7 +1702,21 @@ impl Renderer {
             pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("shadow");
-            pass.dispatch_workgroups(visible_workgroups, 1, 1);
+            // pass.dispatch_workgroups(visible_workgroups, 1, 1);
+            pass.dispatch_workgroups_indirect(&self.buffers.visible_indirect_args, 0);
+        }
+
+        // ambient pass
+        {
+            let mut pass = encoder.begin_compute_pass_timed("Ambient", &mut self.timing);
+
+            pass.set_pipeline(&self.pipelines.ambient);
+            pass.set_bind_group(0, &self.bind_groups.shadow_static, &[]);
+            pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
+
+            pass.insert_debug_marker("ambient");
+            // pass.dispatch_workgroups(visible_workgroups, 1, 1);
+            pass.dispatch_workgroups_indirect(&self.buffers.visible_indirect_args, 0);
         }
 
         // resolve pass
@@ -1676,7 +1727,9 @@ impl Renderer {
             pass.set_bind_group(0, Some(&self.bind_groups.resolve), &[]);
 
             pass.insert_debug_marker("resolve");
-            pass.dispatch_workgroups(visible_workgroups, 1, 1);
+
+            pass.dispatch_workgroups_indirect(&self.buffers.visible_indirect_args, 0);
+            // pass.dispatch_workgroups(visible_workgroups, 1, 1);
         }
         // // ambient pass
         // {

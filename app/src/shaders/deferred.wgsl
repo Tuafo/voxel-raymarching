@@ -4,7 +4,7 @@ override dielectric_specular: f32 = 0.04;
 @group(0) @binding(0) var out_color: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_albedo: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_velocity: texture_storage_2d<rgba16float, read>;
-@group(0) @binding(3) var tex_voxel_id: texture_storage_2d<rg32uint, read>;
+@group(0) @binding(3) var tex_voxel_id: texture_storage_2d<r32uint, read>;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
@@ -78,12 +78,19 @@ fn compute_main(in: ComputeIn) {
     }
 
     let voxel_id = textureLoad(tex_voxel_id, pos).r;
+
+    // let visible_id = map_get(voxel_id);
+
+    // let visible = visible_voxels[visible_index];
+    // let voxel = unpack_voxel(visible.data);
+
     // let map_val = map_get(voxel_id);
 
-    let shadow_packed = voxel_lighting[voxel_id];
+    let lighting_packed = voxel_lighting[voxel_id];
     // let shadow_length = max(shadow_packed & 0xFFFFu, 1u);
     // let shadow_count = min(shadow_length, shadow_packed >> 16u);
-    let shadow = saturate(1.0 - f32(shadow_packed >> 8u) / 16777215.0);
+    let shadow = saturate(1.0 - f32((lighting_packed >> 8u) & 0xFFFu) / 4095.0);
+    let ambient = saturate(1.0 - f32(lighting_packed >> 20u) / 4095.0);
 
     // var shadow = 0.0;
     // if map_val.exists {
@@ -92,6 +99,7 @@ fn compute_main(in: ComputeIn) {
 
     let velocity = textureLoad(tex_velocity, pos).rg;
     let packed = textureLoad(tex_normal, pos).r;
+    // let packed = voxel_leaf_chunks[voxel_id];
     let voxel = unpack_voxel(packed);
 
     let albedo_sample = textureLoad(tex_albedo, pos);
@@ -100,7 +108,7 @@ fn compute_main(in: ComputeIn) {
     // let shadow = illumination.r;
     // let shadow = 0.0;
     // let ambient = illumination.g;
-    let ambient = 1.0;
+    // let ambient = 1.0;
     // let specular = textureLoad(tex_specular, pos, 0).rgb;
     let specular = vec3(0.0);
 

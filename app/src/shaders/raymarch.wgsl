@@ -1,6 +1,6 @@
 @group(0) @binding(0) var tex_out_albedo: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_out_velocity: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(2) var tex_out_id: texture_storage_2d<rg32uint, write>;
+@group(0) @binding(2) var tex_out_id: texture_storage_2d<r32uint, write>;
 
 @group(1) @binding(0) var tex_out_normal: texture_storage_2d<r32uint, write>;
 @group(1) @binding(1) var tex_out_depth: texture_storage_2d<r32float, write>;
@@ -94,7 +94,7 @@ fn compute_main(in: ComputeIn) {
     let res = trace_scene(pos, in.local_index);
 
     textureStore(tex_out_albedo, pos, vec4(res.albedo, 1.0));
-    textureStore(tex_out_id, pos, vec4(res.visible_index, 0, 0));
+    textureStore(tex_out_id, pos, vec4(res.voxel_id, 0, 0, 0));
     textureStore(tex_out_normal, pos, vec4(res.normal, 0, 0, 0));
     textureStore(tex_out_depth, pos, vec4(res.depth, 0.0, 0.0, 1.0));
     textureStore(tex_out_velocity, pos, vec4(res.velocity, 0.0, 1.0));
@@ -105,7 +105,7 @@ struct SceneResult {
     normal: u32,
     depth: f32,
     velocity: vec2<f32>,
-    visible_index: vec2<u32>,
+    voxel_id: u32,
 }
 
 fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
@@ -121,7 +121,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
 
     if !hit.hit {
         var res: SceneResult;
-        res.visible_index = vec2(0);
+        res.voxel_id = 0;
         res.albedo = vec3(1.0, 0.0, 0.0);
         res.normal = 0u;
         res.depth = -1.0;
@@ -175,15 +175,17 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, hit.hit_mask, ray.direction);
     // let packed = repack_voxel(ws_normal,1.0, 0.04, ray.hit_mask);
 
-    var visible: VisibleVoxel;
-    visible.data = packed;
-    visible.leaf_index = hit.leaf_index;
-    visible.pos = pack_voxel_pos(vec3<u32>(hit.local_pos));
-    visible_voxels[visible_index] = visible;
+    if map_result.inserted {
+        var visible: VisibleVoxel;
+        visible.data = packed;
+        visible.leaf_index = hit.leaf_index;
+        visible.pos = pack_voxel_pos(vec3<u32>(hit.local_pos));
+        visible_voxels[visible_index] = visible;
+    }
 
     var res: SceneResult;
     res.albedo = albedo;
-    res.visible_index = vec2<u32>(hit.leaf_index, hit.id);
+    res.voxel_id = hit.leaf_index;
     res.normal = packed;
     res.depth = depth;
     res.velocity = velocity;

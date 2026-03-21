@@ -49,9 +49,7 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-var<workgroup> stack: array<array<u32, 11>, 64>;
-
-const MAX_HISTORY_LENGTH: u32 = 128u;
+const MAX_HISTORY_LENGTH: u32 = 255u;
 
 @compute @workgroup_size(256, 1, 1)
 fn compute_main(in: ComputeIn) {
@@ -61,20 +59,23 @@ fn compute_main(in: ComputeIn) {
     }
 
     let cur = cur_voxel_lighting[in.id.x];
-    let cur_visible = cur & 0xFFFFu;
-    if cur_visible == 0u {
-        return;
-    }
-    let cur_shadow_count = min(cur_visible, cur >> 16u);
-    let cur_shadow = f32(cur_shadow_count) / f32(cur_visible);
+    // let cur_visible = cur & 0xFFFFu;
+    // if cur_visible == 0u {
+    //     return;
+    // }
+    // let cur_shadow_count = min(cur);
+    let cur_shadow = f32(cur & 1u);
+    let cur_ao = f32((cur >> 1u) & 0xFFu) / 255.0;
 
     let acc = acc_voxel_lighting[visible.leaf_index];
-    let acc_shadow = f32(acc >> 8u) / 16777215.0;
+    let acc_shadow = f32((acc >> 8u) & 0xFFFu) / 4095.0;
+    let acc_ao = f32(acc >> 20u) / 4095.0;
     let history_len = min(MAX_HISTORY_LENGTH, (acc & 0xFFu) + 1u);
 
     let alpha = 1.0 / f32(history_len);
     let res_shadow = mix(acc_shadow, cur_shadow, alpha);
+    let res_ao = mix(acc_ao, cur_ao, alpha);
 
-    let res = ((u32(res_shadow * 16777215.0) & 0xFFFFFFu) << 8u) | history_len;
+    let res = ((u32(res_ao * 4095.0) & 0xFFFu) << 20u) | ((u32(res_shadow * 4095.0) & 0xFFFu) << 8u) | history_len;
     acc_voxel_lighting[visible.leaf_index] = res;
 }
