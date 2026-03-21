@@ -12,6 +12,11 @@ struct VisibleVoxel {
     leaf_index: u32,
     pos: array<u32, 2>,
 }
+struct VoxelLighting {
+    irradiance: vec3<f32>,
+    shadow: f32,
+    history_length: u32,
+}
 @group(0) @binding(0) var<uniform> scene: VoxelSceneMetadata;
 @group(0) @binding(1) var<storage, read> index_chunks: array<IndexChunk>;
 @group(0) @binding(2) var tex_noise: texture_3d<f32>;
@@ -20,7 +25,7 @@ struct VisibleVoxel {
 @group(0) @binding(4) var<storage, read> visible_voxels: array<VisibleVoxel>;
 
 // current frame per-voxel shadow values
-@group(0) @binding(5) var<storage, read_write> voxel_lighting: array<atomic<u32>>;
+@group(0) @binding(5) var<storage, read_write> voxel_lighting: array<array<u32, 3>>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -79,8 +84,28 @@ fn compute_main(in: ComputeIn) {
     let noise = blue_noise(vec2(voxel_pos.xy));
 
     if trace_shadow(noise, voxel_center, in.local_index) {
-        atomicOr(&voxel_lighting[in.id.x], 1u);
+        var res: VoxelLighting;
+        res.shadow = 1.0;
+        voxel_lighting[in.id.x] = pack_voxel_lighting(res);
     }
+}
+
+fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
+    return array<u32, 3>(
+        pack2x16float(value.irradiance.rg),
+        pack2x16float(vec2(value.irradiance.b, value.shadow)),
+        value.history_length,
+    );
+}
+fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
+    let irr_rg = unpack2x16float(packed[0]);
+    let irr_b_shadow = unpack2x16float(packed[1]);
+
+    var res: VoxelLighting;
+    res.irradiance = vec3(irr_rg, irr_b_shadow.r);
+    res.shadow = irr_b_shadow.y;
+    res.history_length = packed[2];
+    return res;
 }
 
 fn trace_shadow(noise: vec3<f32>, ls_pos: vec3<f32>, local_index: u32) -> bool {

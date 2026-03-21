@@ -1,6 +1,12 @@
 override min_roughness: f32 = 0.001;
 override dielectric_specular: f32 = 0.04;
 
+struct VoxelLighting {
+    irradiance: vec3<f32>,
+    shadow: f32,
+    history_length: u32,
+}
+
 @group(0) @binding(0) var out_color: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var tex_albedo: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_velocity: texture_storage_2d<rgba16float, read>;
@@ -15,7 +21,7 @@ override dielectric_specular: f32 = 0.04;
 @group(2) @binding(3) var tex_irradiance: texture_cube<f32>;
 @group(2) @binding(4) var tex_prefilter: texture_cube<f32>;
 @group(2) @binding(5) var tex_brdf_lut: texture_2d<f32>;
-@group(2) @binding(6) var<storage, read> voxel_lighting: array<u32>;
+@group(2) @binding(6) var<storage, read> voxel_lighting: array<array<u32,3>>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -79,37 +85,15 @@ fn compute_main(in: ComputeIn) {
 
     let voxel_id = textureLoad(tex_voxel_id, pos).r;
 
-    // let visible_id = map_get(voxel_id);
-
-    // let visible = visible_voxels[visible_index];
-    // let voxel = unpack_voxel(visible.data);
-
-    // let map_val = map_get(voxel_id);
-
-    let lighting_packed = voxel_lighting[voxel_id];
-    // let shadow_length = max(shadow_packed & 0xFFFFu, 1u);
-    // let shadow_count = min(shadow_length, shadow_packed >> 16u);
-    let shadow = saturate(1.0 - f32((lighting_packed >> 8u) & 0xFFFu) / 4095.0);
-    let ambient = saturate(1.0 - f32(lighting_packed >> 20u) / 4095.0);
-
-    // var shadow = 0.0;
-    // if map_val.exists {
-    //     shadow = 1.0 - voxel_lighting[map_val.value];
-    // }
+    let lighting = unpack_voxel_lighting(voxel_lighting[voxel_id]);
+    let shadow = 1.0 - lighting.shadow;
 
     let velocity = textureLoad(tex_velocity, pos).rg;
     let packed = textureLoad(tex_normal, pos).r;
-    // let packed = voxel_leaf_chunks[voxel_id];
     let voxel = unpack_voxel(packed);
 
     let albedo_sample = textureLoad(tex_albedo, pos);
     let albedo = albedo_sample.rgb;
-    // let illumination = textureLoad(tex_illumination, pos, 0);
-    // let shadow = illumination.r;
-    // let shadow = 0.0;
-    // let ambient = illumination.g;
-    // let ambient = 1.0;
-    // let specular = textureLoad(tex_specular, pos, 0).rgb;
     let specular = vec3(0.0);
 
     let ls_pos = ray.ls_origin + ray.direction * depth;
@@ -123,7 +107,7 @@ fn compute_main(in: ComputeIn) {
     surface.metallic = voxel.metallic;
     surface.roughness = max(voxel.roughness, min_roughness);
     surface.shadow = shadow;
-    surface.ao = ambient;
+    surface.irradiance = lighting.irradiance;
     surface.specular = specular;
     var color = pbr(surface);
 
@@ -152,7 +136,7 @@ fn compute_main(in: ComputeIn) {
                 color += vec3(shadow);
             }
             case 8u {
-                color += vec3(ambient);
+                color += surface.irradiance;
             }
             case 9u {
                 color += vec3(surface.specular);
@@ -193,7 +177,7 @@ struct PbrInput {
     roughness: f32,
     specular: vec3<f32>,
     shadow: f32,
-    ao: f32,
+    irradiance: vec3<f32>,
 }
 
 fn pbr(in: PbrInput) -> vec3<f32> {
@@ -233,17 +217,17 @@ fn pbr(in: PbrInput) -> vec3<f32> {
         let ndv = clamp(dot(N, V), 0.0001, 1.0);
         let vdh = saturate(dot(V, H));
 
-        let sky_irradiance = textureSampleLevel(tex_irradiance, sampler_linear, N.xzy, 0.0).rgb * environment.indirect_sky_intensity;
+        // let sky_irradiance = textureSampleLevel(tex_irradiance, sampler_linear, N.xzy, 0.0).rgb * environment.indirect_sky_intensity;
         let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, R.xzy, in.roughness * 5.0).rgb * environment.indirect_sky_intensity;
         let sky_brdf = textureSampleLevel(tex_brdf_lut, sampler_linear, vec2(ndv, in.roughness), 0.0).rg;
 
-        let diffuse = k_d * sky_irradiance * in.albedo / PI;
+        let diffuse = k_d * in.irradiance * in.albedo / PI;
 
         let specular = sky_prefilter * (f_0 * sky_brdf.x + sky_brdf.y);
 
-        indirect = (diffuse + specular) * in.ao;
+        indirect = diffuse + specular * 0.25;
     }
-    let res = direct + indirect * 0.25;
+    let res = direct + indirect;
     return res;
 }
 
@@ -350,4 +334,15 @@ fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
     res.y = x + y - 1.0;
     res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
     return normalize(res);
+}
+
+fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
+    let irr_rg = unpack2x16float(packed[0]);
+    let irr_b_shadow = unpack2x16float(packed[1]);
+
+    var res: VoxelLighting;
+    res.irradiance = vec3(irr_rg, irr_b_shadow.r);
+    res.shadow = irr_b_shadow.y;
+    res.history_length = packed[2];
+    return res;
 }

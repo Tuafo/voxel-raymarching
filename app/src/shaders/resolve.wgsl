@@ -3,9 +3,14 @@ struct VisibleVoxel {
     leaf_index: u32,
     pos: array<u32, 2>,
 }
+struct VoxelLighting {
+    irradiance: vec3<f32>,
+    shadow: f32,
+    history_length: u32,
+}
 @group(0) @binding(0) var<storage, read> visible_voxels: array<VisibleVoxel>;
-@group(0) @binding(1) var<storage, read> cur_voxel_lighting: array<u32>;
-@group(0) @binding(2) var<storage, read_write> acc_voxel_lighting: array<u32>;
+@group(0) @binding(1) var<storage, read> cur_voxel_lighting: array<array<u32, 3>>;
+@group(0) @binding(2) var<storage, read_write> acc_voxel_lighting: array<array<u32, 3>>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -58,24 +63,41 @@ fn compute_main(in: ComputeIn) {
         return;
     }
 
-    let cur = cur_voxel_lighting[in.id.x];
-    // let cur_visible = cur & 0xFFFFu;
-    // if cur_visible == 0u {
-    //     return;
-    // }
-    // let cur_shadow_count = min(cur);
-    let cur_shadow = f32(cur & 1u);
-    let cur_ao = f32((cur >> 1u) & 0xFFu) / 255.0;
+    var cur = unpack_voxel_lighting(cur_voxel_lighting[in.id.x]);
 
-    let acc = acc_voxel_lighting[visible.leaf_index];
-    let acc_shadow = f32((acc >> 8u) & 0xFFFu) / 4095.0;
-    let acc_ao = f32(acc >> 20u) / 4095.0;
-    let history_len = min(MAX_HISTORY_LENGTH, (acc & 0xFFu) + 1u);
+    // let cur_shadow = f32(cur & 1u);
+    // let cur_ao = f32((cur >> 1u) & 0xFFu) / 255.0;
 
-    let alpha = 1.0 / f32(history_len);
-    let res_shadow = mix(acc_shadow, cur_shadow, alpha);
-    let res_ao = mix(acc_ao, cur_ao, alpha);
+    var acc = unpack_voxel_lighting(acc_voxel_lighting[visible.leaf_index]);
+    // let acc_shadow = f32((acc >> 8u) & 0xFFFu) / 4095.0;
+    // let acc_ao = f32(acc >> 20u) / 4095.0;
+    // let history_len = min(MAX_HISTORY_LENGTH, (acc & 0xFFu) + 1u);
+    acc.history_length = min(MAX_HISTORY_LENGTH, acc.history_length + 1u);
 
-    let res = ((u32(res_ao * 4095.0) & 0xFFFu) << 20u) | ((u32(res_shadow * 4095.0) & 0xFFFu) << 8u) | history_len;
-    acc_voxel_lighting[visible.leaf_index] = res;
+    let alpha = 1.0 / f32(acc.history_length);
+    acc.shadow = mix(acc.shadow, cur.shadow, alpha);
+    acc.irradiance = mix(acc.irradiance, cur.irradiance, alpha);
+    // let res_shadow = mix(acc_shadow, cur_shadow, alpha);
+    // let res_ao = mix(acc_ao, cur_ao, alpha);
+
+    // let res = ((u32(res_ao * 4095.0) & 0xFFFu) << 20u) | ((u32(res_shadow * 4095.0) & 0xFFFu) << 8u) | history_len;
+    acc_voxel_lighting[visible.leaf_index] = pack_voxel_lighting(acc);
+}
+
+fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
+    return array<u32, 3>(
+        pack2x16float(value.irradiance.rg),
+        pack2x16float(vec2(value.irradiance.b, value.shadow)),
+        value.history_length,
+    );
+}
+fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
+    let irr_rg = unpack2x16float(packed[0]);
+    let irr_b_shadow = unpack2x16float(packed[1]);
+
+    var res: VoxelLighting;
+    res.irradiance = vec3(irr_rg, irr_b_shadow.r);
+    res.shadow = irr_b_shadow.y;
+    res.history_length = packed[2];
+    return res;
 }

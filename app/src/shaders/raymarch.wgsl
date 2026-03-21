@@ -166,14 +166,12 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let velocity = cur_uv - prev_uv;
 
     let albedo = palette_color(voxel.palette_index);
-    // let albedo = vec3(f32(ray.voxel.palette_index) / 255.0);
 
     let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal);
-    // let ls_normal = ray.hit_normal;
     let ws_normal = normalize(model.normal_transform * ls_normal);
 
+    // let packed = repack_voxel(ws_normal, voxel.metallic, 0.01, hit.hit_mask, ray.direction);
     let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, hit.hit_mask, ray.direction);
-    // let packed = repack_voxel(ws_normal,1.0, 0.04, ray.hit_mask);
 
     if map_result.inserted {
         var visible: VisibleVoxel;

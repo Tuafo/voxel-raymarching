@@ -3,6 +3,9 @@ struct VoxelSceneMetadata {
     index_levels: u32,
     index_chunk_count: u32,
 }
+struct Palette {
+    data: array<vec4<f32>, 1024>,
+}
 struct IndexChunk {
     child_index: u32,
     mask: array<u32, 2>,
@@ -12,15 +15,25 @@ struct VisibleVoxel {
     leaf_index: u32,
     pos: array<u32, 2>,
 }
+struct VoxelLighting {
+    irradiance: vec3<f32>,
+    shadow: f32,
+    history_length: u32,
+}
 @group(0) @binding(0) var<uniform> scene: VoxelSceneMetadata;
-@group(0) @binding(1) var<storage, read> index_chunks: array<IndexChunk>;
-@group(0) @binding(2) var tex_noise: texture_3d<f32>;
-@group(0) @binding(3) var sampler_noise: sampler;
+@group(0) @binding(1) var<uniform> palette: Palette;
+@group(0) @binding(2) var<storage, read> index_chunks: array<IndexChunk>;
+@group(0) @binding(3) var<storage, read> leaf_chunks: array<u32>;
+@group(0) @binding(4) var tex_noise: texture_3d<f32>;
+@group(0) @binding(5) var sampler_noise: sampler;
+@group(0) @binding(6) var sampler_linear: sampler;
+@group(0) @binding(7) var tex_skybox: texture_cube<f32>;
 
-@group(0) @binding(4) var<storage, read> visible_voxels: array<VisibleVoxel>;
+@group(0) @binding(8) var<storage, read> visible_voxels: array<VisibleVoxel>;
 
 // current frame per-voxel shadow values
-@group(0) @binding(5) var<storage, read_write> voxel_lighting: array<atomic<u32>>;
+@group(0) @binding(9) var<storage, read_write> voxel_lighting: array<array<u32, 3>>;
+@group(0) @binding(10) var<storage, read> acc_voxel_lighting: array<array<u32, 3>>;
 
 struct Environment {
     sun_direction: vec3<f32>,
@@ -78,34 +91,62 @@ fn compute_main(in: ComputeIn) {
 
     let noise = blue_noise(vec2(voxel_pos.xy));
 
-    let ambient = trace_ambient(noise, voxel_center, in.local_index, voxel.ls_hit_normal);
-    let res = u32(ambient * 255.0);
-    atomicAdd(&voxel_lighting[in.id.x], res << 1u);
-    // if {
-    //     atomicOr(&voxel_lighting[in.id.x], 2u);
-    // }
+    var res = unpack_voxel_lighting(voxel_lighting[in.id.x]);
+
+    let irradiance = trace_ambient(noise, voxel_center, in.local_index, voxel.ls_hit_normal);
+    res.irradiance = irradiance;
+
+    voxel_lighting[in.id.x] = pack_voxel_lighting(res);
 }
 
-fn trace_ambient(noise: vec3<f32>, ls_pos: vec3<f32>, local_index: u32, ls_normal: vec3<f32>) -> f32 {
+fn trace_ambient(noise: vec3<f32>, ls_pos: vec3<f32>, local_index: u32, ls_normal: vec3<f32>) -> vec3<f32> {
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
 
     var dir = rand_hemisphere_direction(noise.xy, 1.0);
     dir = align_direction(dir, ls_normal);
 
-    // let light_tangent = normalize(cross(light_dir, vec3(0.0, 0.0, 1.0)));
-    // let light_bitangent = normalize(cross(light_tangent, light_dir));
-
-    // let disk_point = noise.xy * 2.0 - 1.0;
-    // let dir = normalize(light_dir + disk_point.x * light_tangent + disk_point.y * light_bitangent);
-
-    // var dir = rand_hemisphere_direction(noise.xy, environment.shadow_spread);
-    // dir = align_direction(dir, light_dir);
-
     var ray: Ray;
     ray.origin = ls_pos + dir * environment.shadow_bias;
     ray.direction = dir;
 
-    return raymarch_ambient(ray, local_index, f32(environment.max_ambient_distance));
+    let hit = raymarch_ambient(ray, local_index, f32(environment.max_ambient_distance));
+
+    if hit.hit {
+        let secondary = unpack_leaf_voxel(leaf_chunks[hit.leaf_index]);
+        let albedo = palette_color(secondary.palette_index);
+
+        const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 3.0;
+        let N = normalize(model.normal_transform * secondary.normal);
+        let L = normalize(environment.sun_direction);
+
+        let ndl = max(dot(N, L), 0.0);
+        let diffuse = SUN_COLOR * ndl * albedo;
+
+        return diffuse;
+    } else {
+        let ws_ray_dir = normalize((model.transform * vec4(dir, 0.0)).xyz);
+        var sky_color = textureSampleLevel(tex_skybox, sampler_linear, ws_ray_dir.xzy, 0.0).rgb;
+        sky_color = min(sky_color, vec3(4.0));
+        return sky_color;
+    }
+}
+
+fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
+    return array<u32, 3>(
+        pack2x16float(value.irradiance.rg),
+        pack2x16float(vec2(value.irradiance.b, value.shadow)),
+        value.history_length,
+    );
+}
+fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
+    let irr_rg = unpack2x16float(packed[0]);
+    let irr_b_shadow = unpack2x16float(packed[1]);
+
+    var res: VoxelLighting;
+    res.irradiance = vec3(irr_rg, irr_b_shadow.r);
+    res.shadow = irr_b_shadow.y;
+    res.history_length = packed[2];
+    return res;
 }
 
 struct Ray {
@@ -113,7 +154,14 @@ struct Ray {
     direction: vec3<f32>,
 }
 
-fn raymarch_ambient(ray: Ray, local_index: u32, max_distance: f32) -> f32 {
+struct RaymarchResult {
+    hit: bool,
+    id: u32,
+    leaf_index: u32,
+    depth: f32,
+}
+
+fn raymarch_ambient(ray: Ray, local_index: u32, max_distance: f32) -> RaymarchResult {
     var dir = ray.direction;
     let inv_dir = -1.0 / max(abs(dir), vec3(1e-8));
 
@@ -151,9 +199,18 @@ fn raymarch_ambient(ray: Ray, local_index: u32, max_distance: f32) -> f32 {
 
         // if we reached a leaf, we're done
         if !skip_next_hit && chunk_contains_child(chunk.mask, child_offset) && chunk_is_leaf(chunk.child_index) {
-            let t_max = min(min(side_distance.x, side_distance.y), side_distance.z) * f32(scene.bounding_size);
-            return 1.0 - saturate(t_max / max_distance);
-            // return 1.0;
+            let leaf_index = (chunk.child_index >> 1u) + mask_packed_offset(chunk.mask, child_offset);
+
+            let t_max = min(min(side_distance.x, side_distance.y), side_distance.z);
+            let t_total = f32(scene.bounding_size) * t_max;
+
+            // let mask = vec3(t_max) >= side_distance;
+
+            var res: RaymarchResult;
+            res.hit = true;
+            res.leaf_index = leaf_index;
+            res.depth = t_total;
+            return res;
         }
 
         var adv_scale_exp = scale_exp;
@@ -187,7 +244,7 @@ fn raymarch_ambient(ray: Ray, local_index: u32, max_distance: f32) -> f32 {
         skip_next_hit = false;
     }
 
-    return 0.0;
+    return RaymarchResult();
 }
 
 // noise from https://github.com/electronicarts/fastnoise/blob/main/FastNoiseDesign.md
@@ -283,6 +340,10 @@ fn primary_ray(uv: vec2<f32>) -> Ray {
     return ray;
 }
 
+fn palette_color(index: u32) -> vec3<f32> {
+    return palette.data[index].rgb;
+}
+
 // aligns dir to n's tangent space
 fn align_direction(dir: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     var tangent = vec3<f32>(0.0);
@@ -343,6 +404,34 @@ fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
     return normalize(res);
 }
 
+struct LeafVoxel {
+    normal: vec3<f32>,
+    metallic: f32,
+    roughness: f32,
+    palette_index: u32,
+}
+fn unpack_leaf_voxel(packed: u32) -> LeafVoxel {
+    var res: LeafVoxel;
+    res.normal = decode_leaf_normal_octahedral(packed >> 15u);
+    res.metallic = f32((packed >> 14u) & 1u);
+    res.roughness = f32((packed >> 10u) & 0xfu) / 15.0;
+    res.palette_index = packed & 0x3ffu;
+    return res;
+}
+
+/// decodes world space normal from lower 17 bits of u32
+// uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
+fn decode_leaf_normal_octahedral(packed: u32) -> vec3<f32> {
+    let x = f32((packed >> 9u) & 0xffu) / 255.0;
+    let y = f32((packed >> 1u) & 0xffu) / 255.0;
+    let sgn = f32(packed & 1u) * 2.0 - 1.0;
+    var res = vec3<f32>(0.);
+    res.x = x - y;
+    res.y = x + y - 1.0;
+    res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
+    return normalize(res);
+}
+
 /// ------------------------------------------------------
 /// -------------------- map utils -----------------------
 
@@ -353,3 +442,51 @@ fn unpack_voxel_pos(packed: array<u32, 2>) -> vec3<u32> {
         packed[0] >> 10u,
     );
 }
+
+// struct MapResult {
+//     found: bool,
+//     voxel: VisibleVoxel,
+// }
+
+// fn map_get(key: u32) -> MapResult {
+//     let n = arrayLength(&voxel_map) >> 1u;
+
+//     var index = (hash_murmur3(key) % n) << 1u;
+//     for (var _i = 0u; _i < 4u; _i++) {
+//         if voxel_map[index] == key {
+//             let visible_index = voxel_map[index + 1u];
+//             var res: MapResult;
+//             res.found = true;
+//             res.voxel = visible_voxels[visible_index];
+//             return res;
+//         }
+//         index += 2u;
+//     }
+
+//     return MapResult();
+// }
+
+// // from https://github.com/aappleby/smhasher
+// fn hash_murmur3(seed: u32) -> u32 {
+//     const C1: u32 = 0xcc9e2d51u;
+//     const C2: u32 = 0x1b873593u;
+
+//     var h = 0u;
+//     var k = seed;
+
+//     k *= C1;
+//     k = (k << 15u) | (k >> 17u);
+//     k *= C2;
+
+//     h ^= k;
+//     h = (h << 13u) | (h >> 19u);
+//     h = h * 5u + 0xe6546b64u;
+//     h ^= 4u;
+
+//     h ^= h >> 16;
+//     h *= 0x85ebca6bu;
+//     h ^= h >> 13;
+//     h *= 0xc2b2ae35u;
+//     h ^= h >> 16;
+//     return h;
+// }

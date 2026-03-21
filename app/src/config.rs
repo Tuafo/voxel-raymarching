@@ -43,7 +43,7 @@ impl Default for Config {
             shadow_filter_radius: 7.0,
             voxel_normal_factor: 0.5,
             indirect_sky_intensity: 0.5,
-            ambient_ray_max_distance: 10,
+            ambient_ray_max_distance: 300,
             view: DebugView::Composite,
             fxaa: false,
             taa: true,

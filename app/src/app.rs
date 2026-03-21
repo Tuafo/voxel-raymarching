@@ -37,7 +37,8 @@ impl App {
             features |= wgpu::Features::TIMESTAMP_QUERY;
         }
 
-        let limits = wgpu::Limits::default();
+        let mut limits = wgpu::Limits::default();
+        limits.max_storage_buffer_binding_size = 512 * 1024 * 1024;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {

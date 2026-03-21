@@ -92,6 +92,7 @@ struct BindGroupLayouts {
     // ambient_gbuffer: wgpu::BindGroupLayout,
     // shadow_swap: wgpu::BindGroupLayout,
     shadow_static: wgpu::BindGroupLayout,
+    ambient_static: wgpu::BindGroupLayout,
     resolve: wgpu::BindGroupLayout,
     // specular_gbuffer: wgpu::BindGroupLayout,
     // lighting_resolve_gbuffer: wgpu::BindGroupLayout,
@@ -116,6 +117,7 @@ struct BindGroups {
     // ambient_gbuffer: Option<wgpu::BindGroup>,
     // shadow_swap: Option<SwapchainBindGroup>,
     shadow_static: wgpu::BindGroup,
+    ambient_static: wgpu::BindGroup,
     resolve: wgpu::BindGroup,
     // specular_gbuffer: Option<wgpu::BindGroup>,
     // lighting_resolve_gbuffer: Option<wgpu::BindGroup>,
@@ -255,6 +257,23 @@ impl Renderer {
                     storage_buffer().read_write(),
                 ),
             ),
+            ambient_static: device.layout(
+                "ambient_static",
+                ShaderStages::COMPUTE,
+                (
+                    uniform_buffer(),
+                    uniform_buffer(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
+                    texture().unfilterable_float().dimension_3d(),
+                    sampler().non_filtering(),
+                    sampler().filtering(),
+                    texture().float().dimension_cube(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_write(),
+                    storage_buffer().read_only(),
+                ),
+            ),
             resolve: device.layout(
                 "resolve_swap",
                 ShaderStages::COMPUTE,
@@ -387,7 +406,7 @@ impl Renderer {
                 .layout(&[&bg_layouts.shadow_static, &bg_layouts.per_frame_shared]),
             ambient: device
                 .compute_pipeline("ambient", &shaders.ambient)
-                .layout(&[&bg_layouts.shadow_static, &bg_layouts.per_frame_shared]),
+                .layout(&[&bg_layouts.ambient_static, &bg_layouts.per_frame_shared]),
             resolve: device
                 .compute_pipeline("resolve", &shaders.resolve)
                 .layout(&[&bg_layouts.resolve]),
@@ -579,13 +598,13 @@ impl Renderer {
             }),
             cur_voxel_lighting: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("voxel_lighting"),
-                size: voxel_queue_len * 4,
+                size: voxel_queue_len * 12,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
             acc_voxel_lighting: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("acc_voxel_lighting"),
-                size: leaf_chunks_size,
+                size: leaf_chunks_size * 3,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -720,6 +739,65 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 5,
                         resource: buffers.cur_voxel_lighting.as_entire_binding(),
+                    },
+                ],
+            }),
+            ambient_static: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ambient_static"),
+                layout: &bg_layouts.ambient_static,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buffers.voxel_palette.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: buffers.voxel_index_chunks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: buffers.voxel_leaf_chunks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(
+                            &textures.noise_sphere_gauss.create_view(&Default::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&samplers.nearest_repeat),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Sampler(&samplers.linear),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(&skybox.cubemap.create_view(
+                            &wgpu::TextureViewDescriptor {
+                                label: Some("skybox"),
+                                dimension: Some(wgpu::TextureViewDimension::Cube),
+                                usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: buffers.visible_voxels.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: buffers.cur_voxel_lighting.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: buffers.acc_voxel_lighting.as_entire_binding(),
                     },
                 ],
             }),
@@ -1711,7 +1789,7 @@ impl Renderer {
             let mut pass = encoder.begin_compute_pass_timed("Ambient", &mut self.timing);
 
             pass.set_pipeline(&self.pipelines.ambient);
-            pass.set_bind_group(0, &self.bind_groups.shadow_static, &[]);
+            pass.set_bind_group(0, &self.bind_groups.ambient_static, &[]);
             pass.set_bind_group(1, &self.bind_groups.per_frame_shared, &[]);
 
             pass.insert_debug_marker("ambient");
