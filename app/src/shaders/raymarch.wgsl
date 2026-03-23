@@ -106,6 +106,7 @@ struct SceneResult {
     depth: f32,
     velocity: vec2<f32>,
     voxel_id: u32,
+    ao: f32,
 }
 
 fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
@@ -167,7 +168,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
 
     let albedo = palette_color(voxel.palette_index);
 
-    let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal);
+    let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal, voxel.roughness);
     let ws_normal = normalize(model.normal_transform * ls_normal);
 
     // let packed = repack_voxel(ws_normal, voxel.metallic, 0.01, hit.hit_mask, ray.direction);
@@ -200,7 +201,6 @@ struct Ray {
 
 struct RaymarchResult {
     hit: bool,
-    id: u32,
     leaf_index: u32,
     hit_normal: vec3<f32>,
     local_pos: vec3<f32>,
@@ -237,15 +237,7 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
     for (i = 0u; i < 256; i++) {
         var child_offset = chunk_offset(pos, scale_exp) ^ mirror_mask;
 
-        // while (chunk_contains_child(chunk.mask, child_offset) && !chunk_is_leaf(chunk.child_index) && scale_exp >= 2u) {
         while (scale_exp >= 2) & chunk_contains_child(chunk.mask, child_offset) & (!chunk_is_leaf(chunk.child_index)) {
-            // let is_valid = scale_exp >= 2u;
-            // let has_child = chunk_contains_child(chunk.mask, child_offset);
-            // let is_node = !chunk_is_leaf(chunk.child_index);
-            // if !(is_valid & has_child & is_node) {
-            // 	break;
-            // }
-
             stack[local_index][scale_exp >> 1u] = ci;
             ci = (chunk.child_index >> 1u) + mask_packed_offset(chunk.mask, child_offset);
             chunk = index_chunks[ci];
@@ -263,16 +255,13 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
             let t_max = min(min(side_distance.x, side_distance.y), side_distance.z);
             let t_total = ray.t_start + f32(scene.bounding_size) * t_max;
 
-            let mask = vec3(t_max) >= side_distance;
+            let local_pos = ray.ls_origin + dir * t_total;
 
-            // TODO: this will overflow if we have > ~8 million index leaf chunks and i go back to putting the hit mask here
-            // we're set if we keep 26 bits for the chunk index like here though
-            // sitting around 1 million on the bistro scene at 20 voxels /meter right now.
-            let id = (ci << 6u) | child_offset;
+            let mask = vec3(t_max) >= side_distance;
+            let hit_normal = vec3<i32>(-sign(dir)) * vec3<i32>(mask);
 
             var res: RaymarchResult;
             res.hit = true;
-            res.id = id;
             res.leaf_index = leaf_index;
             res.hit_normal = normalize(-vec3<f32>(sign(dir)) * vec3<f32>(mask));
             res.depth = t_total;
@@ -466,8 +455,10 @@ fn palette_color(index: u32) -> vec3<f32> {
 
 // clamps per-voxel normal to cone aligned with the hit normal
 // https://www.desmos.com/3d/cnbvln5rz6
-fn align_per_voxel_normal(n_hit: vec3<f32>, n_surface: vec3<f32>) -> vec3<f32> {
-    let t = clamp(1.0 - environment.smooth_normal_factor * 2.0, -0.999, 0.999);
+fn align_per_voxel_normal(n_hit: vec3<f32>, n_surface: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let smooth_factor = smoothstep(0.0, 1.0, roughness) * environment.smooth_normal_factor;
+
+    let t = clamp(1.0 - smooth_factor * 2.0, -0.999, 0.999);
 
     let d = dot(n_hit, n_surface);
     if d > t {

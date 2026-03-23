@@ -3,6 +3,7 @@ use image::EncodableLayout;
 use serde::{Deserialize, Serialize};
 use std::{
     array,
+    f64::consts::PI,
     io::{BufRead, Cursor, Read, Seek},
 };
 use wgpu::{BufferSlice, util::DeviceExt};
@@ -10,7 +11,7 @@ use wgpu::{BufferSlice, util::DeviceExt};
 #[derive(Debug)]
 pub struct LightmapResult {
     pub cubemap: wgpu::Texture,
-    pub irradiance: wgpu::Texture,
+    pub downsampled: wgpu::Texture,
     pub prefilter: wgpu::Texture,
     pub brdf: wgpu::Texture,
 }
@@ -19,7 +20,7 @@ pub struct LightmapResult {
 pub struct LightmapHeader {
     pub name: String,
     hdr: ExternalTextureView,
-    irradiance: SerializedTextureView,
+    downsampled: SerializedTextureView,
     prefilter: Vec<SerializedTextureView>,
     brdf: SerializedTextureView,
 }
@@ -194,8 +195,8 @@ impl LightmapResult {
             end: buf.len(),
         };
 
-        let irradiance =
-            SerializedTextureView::from_texture(device, queue, &self.irradiance, &mut buf)?[0]
+        let downsampled =
+            SerializedTextureView::from_texture(device, queue, &self.downsampled, &mut buf)?[0]
                 .clone();
         let prefilter =
             SerializedTextureView::from_texture(device, queue, &self.prefilter, &mut buf)?;
@@ -205,7 +206,7 @@ impl LightmapResult {
         let header = LightmapHeader {
             name: String::from(name),
             hdr,
-            irradiance,
+            downsampled,
             prefilter,
             brdf,
         };
@@ -232,12 +233,12 @@ impl LightmapResult {
 
         let res = Self {
             cubemap: generate_skybox(hdr_src, device, queue)?,
-            irradiance: device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("irradiance"),
+            downsampled: device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("downsampled"),
                 size: wgpu::Extent3d {
-                    width: header.irradiance.size.x,
-                    height: header.irradiance.size.y,
-                    depth_or_array_layers: header.irradiance.size.z,
+                    width: header.downsampled.size.x,
+                    height: header.downsampled.size.y,
+                    depth_or_array_layers: header.downsampled.size.z,
                 },
                 mip_level_count: 1,
                 sample_count: 1,
@@ -283,8 +284,8 @@ impl LightmapResult {
         };
 
         header
-            .irradiance
-            .deserialize(&buf, device, queue, &res.irradiance);
+            .downsampled
+            .deserialize(&buf, device, queue, &res.downsampled);
         for mip in header.prefilter {
             mip.deserialize(&buf, device, queue, &res.prefilter);
         }
@@ -296,21 +297,21 @@ impl LightmapResult {
 
 struct BindGroupLayouts {
     cubemap: wgpu::BindGroupLayout,
-    irradiance: wgpu::BindGroupLayout,
+    downsampled: wgpu::BindGroupLayout,
     prefilter: wgpu::BindGroupLayout,
     brdf: wgpu::BindGroupLayout,
 }
 
 struct BindGroups {
     cubemap: wgpu::BindGroup,
-    irradiance: wgpu::BindGroup,
+    downsampled: wgpu::BindGroup,
     prefilter: [wgpu::BindGroup; PREFILTER_LEVELS as usize],
     brdf: wgpu::BindGroup,
 }
 
 struct Pipelines {
     cubemap: wgpu::ComputePipeline,
-    irradiance: wgpu::ComputePipeline,
+    downsampled: wgpu::ComputePipeline,
     prefilter: wgpu::ComputePipeline,
     brdf: wgpu::ComputePipeline,
 }
@@ -319,15 +320,16 @@ struct Resources {
     sampler: wgpu::Sampler,
     tex_hdr: wgpu::Texture,
     tex_cubemap: wgpu::Texture,
-    tex_irradiance: wgpu::Texture,
+    tex_downsampled: wgpu::Texture,
     tex_prefilter: wgpu::Texture,
     tex_brdf_lut: wgpu::Texture,
 }
 
 const SKYBOX_RESOLUTION: u32 = 2048;
 const SKYBOX_MAX_COMPONENT: f32 = 50.0;
-const IRRADIANCE_RESOLUTION: u32 = 128;
-const IRRADIANCE_DELTA: f64 = 0.01;
+const DOWNSAMPLED_RESOLUTION: u32 = 256;
+const DOWNSAMPLE_STEP: f64 = 0.001;
+const DOWNSAMPLE_RADIUS: f64 = 0.05;
 const PREFILTER_RESOLUTION: u32 = 256;
 const PREFILTER_LEVELS: u32 = 5;
 const PREFILTER_SAMPLES: u32 = 4096;
@@ -496,8 +498,8 @@ pub fn generate_lighting<R: BufRead + Seek>(
                 },
             ],
         }),
-        irradiance: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("irradiance"),
+        downsampled: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("downsampled"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -601,24 +603,24 @@ pub fn generate_lighting<R: BufRead + Seek>(
             compilation_options: Default::default(),
             cache: None,
         }),
-        irradiance: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("irradiance"),
+        downsampled: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("downsampled"),
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("irradiance"),
-                    bind_group_layouts: &[&bg_layouts.irradiance],
+                    label: Some("downsampled"),
+                    bind_group_layouts: &[&bg_layouts.downsampled],
                     immediate_size: 0,
                 }),
             ),
             module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("irradiance"),
+                label: Some("downsampled"),
                 source: wgpu::ShaderSource::Wgsl(
-                    std::include_str!("shaders/irradiance.wgsl").into(),
+                    std::include_str!("shaders/downsample.wgsl").into(),
                 ),
             }),
             entry_point: Some("compute_main"),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[("delta", IRRADIANCE_DELTA)],
+                constants: &[("delta", DOWNSAMPLE_STEP), ("radius", DOWNSAMPLE_RADIUS)],
                 ..Default::default()
             },
             cache: None,
@@ -690,11 +692,11 @@ pub fn generate_lighting<R: BufRead + Seek>(
                 | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         }),
-        tex_irradiance: device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("irradiance"),
+        tex_downsampled: device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("downsampled"),
             size: wgpu::Extent3d {
-                width: IRRADIANCE_RESOLUTION,
-                height: IRRADIANCE_RESOLUTION,
+                width: DOWNSAMPLED_RESOLUTION,
+                height: DOWNSAMPLED_RESOLUTION,
                 depth_or_array_layers: 6,
             },
             mip_level_count: 1,
@@ -763,9 +765,9 @@ pub fn generate_lighting<R: BufRead + Seek>(
                 },
             ],
         }),
-        irradiance: device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("irradiance"),
-            layout: &bg_layouts.irradiance,
+        downsampled: device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("downsampled"),
+            layout: &bg_layouts.downsampled,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -783,7 +785,7 @@ pub fn generate_lighting<R: BufRead + Seek>(
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(
-                        &resources.tex_irradiance.create_view(&Default::default()),
+                        &resources.tex_downsampled.create_view(&Default::default()),
                     ),
                 },
                 wgpu::BindGroupEntry {
@@ -884,12 +886,12 @@ pub fn generate_lighting<R: BufRead + Seek>(
             label: Some("irradiance"),
             timestamp_writes: None,
         });
-        pass.set_pipeline(&pipelines.irradiance);
-        pass.set_bind_group(0, &bind_groups.irradiance, &[]);
+        pass.set_pipeline(&pipelines.downsampled);
+        pass.set_bind_group(0, &bind_groups.downsampled, &[]);
         pass.insert_debug_marker("irradiance");
         pass.dispatch_workgroups(
-            IRRADIANCE_RESOLUTION.div_ceil(8),
-            IRRADIANCE_RESOLUTION.div_ceil(8),
+            DOWNSAMPLED_RESOLUTION.div_ceil(8),
+            DOWNSAMPLED_RESOLUTION.div_ceil(8),
             6,
         );
     }
@@ -926,7 +928,7 @@ pub fn generate_lighting<R: BufRead + Seek>(
 
     Ok(LightmapResult {
         cubemap: resources.tex_cubemap,
-        irradiance: resources.tex_irradiance,
+        downsampled: resources.tex_downsampled,
         prefilter: resources.tex_prefilter,
         brdf: resources.tex_brdf_lut,
     })

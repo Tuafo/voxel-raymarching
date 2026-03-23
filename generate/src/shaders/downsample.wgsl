@@ -1,4 +1,5 @@
 override delta: f32 = 0.025;
+override radius: f32 = 0.2;
 
 @group(0) @binding(0) var tex_in: texture_cube<f32>;
 @group(0) @binding(1) var tex_out: texture_storage_2d_array<rgba16float, write>;
@@ -16,7 +17,7 @@ fn compute_main(in: ComputeIn) {
 
     let normal: vec3<f32> = normalize(pos);
     var up: vec3<f32> = vec3<f32>(0.0, 0.0, 1.0);
-    if (abs(normal.z) > 0.999) {
+    if abs(normal.z) > 0.999 {
         up = vec3<f32>(1.0, 0.0, 0.0);
     }
     var right: vec3<f32> = normalize(cross(up, normal));
@@ -24,22 +25,28 @@ fn compute_main(in: ComputeIn) {
 
     const PI = 3.14159265359;
 
-    var irradiance = vec3<f32>(0.0);
-    var samples: i32 = 0;
+    let sigma = radius / 3.0;
+
+    var acc_color = vec3<f32>(0.0);
+    var acc_weight = 0.0;
+
     for (var p: f32 = 0.0; p < 2.0 * PI; p += delta) {
-        for (var t: f32 = 0.0; t < 0.5 * PI; t += delta) {
+        for (var t: f32 = 0.001; t <= radius; t += delta) {
             let tangent = vec3<f32>(sin(t) * cos(p), sin(t) * sin(p), cos(t));
 
             let dir = tangent.x * right + tangent.y * up + tangent.z * normal;
-            let sample = textureSampleLevel(tex_in, sampler_main, dir.xyz, 0.0).rgb;
+            let sample = textureSampleLevel(tex_in, sampler_main, dir, 0.0).rgb;
 
-            irradiance += sample * cos(t) * sin(t);
-            samples += 1;
+            let gaussian = exp(-(t * t) / (2.0 * sigma * sigma));
+            let weight = gaussian * sin(t);
+
+            acc_color += sample * weight;
+            acc_weight += weight;
         }
     }
-    irradiance = PI * PI * irradiance * (1.0 / f32(samples));
 
-    textureStore(tex_out, vec2<i32>(in.id.xy), in.id.z, vec4<f32>(irradiance, 1.0));
+    let res = acc_color / acc_weight;
+    textureStore(tex_out, vec2<i32>(in.id.xy), in.id.z, vec4<f32>(res, 1.0));
 }
 
 fn world_pos(cubemap_pos: vec3<u32>, cubemap_dim: vec2<f32>) -> vec3<f32> {

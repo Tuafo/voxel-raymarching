@@ -89,7 +89,8 @@ fn compute_main(in: ComputeIn) {
     let voxel_pos = unpack_voxel_pos(visible.pos);
     let voxel_center = vec3<f32>(voxel_pos) + 0.5;
 
-    let noise = blue_noise(vec2(voxel_pos.xy));
+    // let noise = blue_noise(vec2(voxel_pos.xy));
+    let noise = hash_noise(visible.leaf_index);
 
     var res = unpack_voxel_lighting(voxel_lighting[in.id.x]);
 
@@ -99,54 +100,47 @@ fn compute_main(in: ComputeIn) {
     voxel_lighting[in.id.x] = pack_voxel_lighting(res);
 }
 
-fn trace_ambient(noise: vec3<f32>, ls_pos: vec3<f32>, local_index: u32, ls_normal: vec3<f32>) -> vec3<f32> {
+fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_normal: vec3<f32>) -> vec3<f32> {
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
 
-    var dir = rand_hemisphere_direction(noise.xy, 1.0);
+    let u = f32(reverseBits(frame.frame_id)) * 2.3283064365386963e-10;
+    let v = fract(f32(frame.frame_id) * 0.61803398875);
+    var sample = fract(vec2(u, v) + noise);
+
+    let r = sqrt(sample.x);
+    let t = 2.0 * 3.14159265359 * sample.y;
+    var dir = vec3<f32>(r * cos(t), r * sin(t), sqrt(max(0.0, 1.0 - sample.x)));
     dir = align_direction(dir, ls_normal);
 
     var ray: Ray;
-    ray.origin = ls_pos + dir * environment.shadow_bias;
+    ray.origin = ls_pos + dir * 1.0;
     ray.direction = dir;
 
-    let hit = raymarch_ambient(ray, local_index, f32(environment.max_ambient_distance));
+    let hit = raymarch(ray);
 
     if hit.hit {
         let secondary = unpack_leaf_voxel(leaf_chunks[hit.leaf_index]);
         let albedo = palette_color(secondary.palette_index);
 
+        let lighting = unpack_voxel_lighting(acc_voxel_lighting[hit.leaf_index]);
+
         const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 3.0;
         let N = normalize(model.normal_transform * secondary.normal);
         let L = normalize(environment.sun_direction);
-
         let ndl = max(dot(N, L), 0.0);
-        let diffuse = SUN_COLOR * ndl * albedo;
+
+        let direct = SUN_COLOR * ndl * lighting.shadow;
+        let indirect = lighting.irradiance;
+
+        let diffuse = (direct + lighting.irradiance) * albedo;
 
         return diffuse;
     } else {
         let ws_ray_dir = normalize((model.transform * vec4(dir, 0.0)).xyz);
         var sky_color = textureSampleLevel(tex_skybox, sampler_linear, ws_ray_dir.xzy, 0.0).rgb;
-        sky_color = min(sky_color, vec3(4.0));
+        sky_color = min(sky_color, vec3(15.0));
         return sky_color;
     }
-}
-
-fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
-    return array<u32, 3>(
-        pack2x16float(value.irradiance.rg),
-        pack2x16float(vec2(value.irradiance.b, value.shadow)),
-        value.history_length,
-    );
-}
-fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
-    let irr_rg = unpack2x16float(packed[0]);
-    let irr_b_shadow = unpack2x16float(packed[1]);
-
-    var res: VoxelLighting;
-    res.irradiance = vec3(irr_rg, irr_b_shadow.r);
-    res.shadow = irr_b_shadow.y;
-    res.history_length = packed[2];
-    return res;
 }
 
 struct Ray {
@@ -161,7 +155,7 @@ struct RaymarchResult {
     depth: f32,
 }
 
-fn raymarch_ambient(ray: Ray, local_index: u32, max_distance: f32) -> RaymarchResult {
+fn raymarch(ray: Ray) -> RaymarchResult {
     var dir = ray.direction;
     let inv_dir = -1.0 / max(abs(dir), vec3(1e-8));
 
@@ -432,6 +426,13 @@ fn decode_leaf_normal_octahedral(packed: u32) -> vec3<f32> {
     return normalize(res);
 }
 
+fn hash_noise(voxel_id: u32) -> vec2<f32> {
+    let p = f32(voxel_id);
+    var p3 = fract(vec3(p, p, p) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
 /// ------------------------------------------------------
 /// -------------------- map utils -----------------------
 
@@ -442,6 +443,26 @@ fn unpack_voxel_pos(packed: array<u32, 2>) -> vec3<u32> {
         packed[0] >> 10u,
     );
 }
+
+fn pack_voxel_lighting(value: VoxelLighting) -> array<u32, 3> {
+    return array<u32, 3>(
+        pack2x16float(value.irradiance.rg),
+        pack2x16float(vec2(value.irradiance.b, value.shadow)),
+        value.history_length,
+    );
+}
+
+fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
+    let irr_rg = unpack2x16float(packed[0]);
+    let irr_b_shadow = unpack2x16float(packed[1]);
+
+    var res: VoxelLighting;
+    res.irradiance = vec3(irr_rg, irr_b_shadow.r);
+    res.shadow = irr_b_shadow.y;
+    res.history_length = packed[2];
+    return res;
+}
+
 
 // struct MapResult {
 //     found: bool,
@@ -464,29 +485,4 @@ fn unpack_voxel_pos(packed: array<u32, 2>) -> vec3<u32> {
 //     }
 
 //     return MapResult();
-// }
-
-// // from https://github.com/aappleby/smhasher
-// fn hash_murmur3(seed: u32) -> u32 {
-//     const C1: u32 = 0xcc9e2d51u;
-//     const C2: u32 = 0x1b873593u;
-
-//     var h = 0u;
-//     var k = seed;
-
-//     k *= C1;
-//     k = (k << 15u) | (k >> 17u);
-//     k *= C2;
-
-//     h ^= k;
-//     h = (h << 13u) | (h >> 19u);
-//     h = h * 5u + 0xe6546b64u;
-//     h ^= 4u;
-
-//     h ^= h >> 16;
-//     h *= 0x85ebca6bu;
-//     h ^= h >> 13;
-//     h *= 0xc2b2ae35u;
-//     h ^= h >> 16;
-//     return h;
 // }

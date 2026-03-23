@@ -81,9 +81,16 @@ fn compute_main(in: ComputeIn) {
     let voxel_pos = unpack_voxel_pos(visible.pos);
     let voxel_center = vec3<f32>(voxel_pos) + 0.5;
 
-    let noise = blue_noise(vec2(voxel_pos.xy));
+    // let noise = blue_noise(vec2(voxel_pos.xy));
+    // let nx = hash_murmur3(visible.leaf_index);
+    // let ny = hash_murmur3(3u * visible.leaf_index + 17u);
+    // let noise = vec2(
+    //     f32(nx) * 2.3283064365386963e-10,
+    //     f32(ny) * 2.3283064365386963e-10,
+    // );
+    let noise = hash_noise(visible.leaf_index);
 
-    if trace_shadow(noise, voxel_center, in.local_index) {
+    if !trace_shadow(noise, voxel_center, in.local_index) {
         var res: VoxelLighting;
         res.shadow = 1.0;
         voxel_lighting[in.id.x] = pack_voxel_lighting(res);
@@ -108,20 +115,29 @@ fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
     return res;
 }
 
-fn trace_shadow(noise: vec3<f32>, ls_pos: vec3<f32>, local_index: u32) -> bool {
+fn trace_shadow(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32) -> bool {
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
 
     let light_tangent = normalize(cross(light_dir, vec3(0.0, 0.0, 1.0)));
     let light_bitangent = normalize(cross(light_tangent, light_dir));
 
-    let disk_point = (noise.xy * 2.0 - 1.0) * environment.shadow_spread;
-    let dir = normalize(light_dir + disk_point.x * light_tangent + disk_point.y * light_bitangent);
+    // let disk_point = (noise.xy * 2.0 - 1.0) * environment.shadow_spread;
+    // let dir = normalize(light_dir + disk_point.x * light_tangent + disk_point.y * light_bitangent);
+
+    let u = f32(reverseBits(frame.frame_id)) * 2.3283064365386963e-10;
+    let v = fract(f32(frame.frame_id) * 0.61803398875);
+    var sample = fract(vec2(u, v) + noise);
+    sample.x *= environment.shadow_spread;
+
+    let r = sqrt(sample.x);
+    let t = 2.0 * 3.14159265359 * sample.y;
+    var dir = vec3<f32>(r * cos(t), r * sin(t), sqrt(max(0.0, 1.0 - sample.x)));
+    dir = align_direction(dir, light_dir);
 
     // var dir = rand_hemisphere_direction(noise.xy, environment.shadow_spread);
-    // dir = align_direction(dir, light_dir);
 
     var ray: Ray;
-    ray.origin = ls_pos + light_dir * environment.shadow_bias;
+    ray.origin = ls_pos + dir * environment.shadow_bias;
     ray.direction = dir;
 
     return raymarch_shadow(ray, local_index);
@@ -369,4 +385,11 @@ fn unpack_voxel_pos(packed: array<u32, 2>) -> vec3<u32> {
         ((packed[0] & 0x3FFu) << 10u) | (packed[1] >> 20u),
         packed[0] >> 10u,
     );
+}
+
+fn hash_noise(voxel_id: u32) -> vec2<f32> {
+    let p = f32(voxel_id);
+    var p3 = fract(vec3(p, p, p) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
 }

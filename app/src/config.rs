@@ -29,10 +29,11 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            init_scene: MODELS.bistro,
             init_skybox: LIGHTMAPS.partly_cloudy,
-            // init_camera_pos: glam::dvec3(9.0, 14.0, 5.0),
+            init_scene: MODELS.bistro,
             init_camera_pos: glam::dvec3(30.0, 55.0, 8.0),
+            // init_scene: MODELS.sponza,
+            // init_camera_pos: glam::dvec3(9.0, 14.0, 5.0),
             voxel_scale: 1,
             render_scale: 0.5,
             sun_azimuth: -2.5,

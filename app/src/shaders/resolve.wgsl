@@ -54,7 +54,7 @@ struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
-const MAX_HISTORY_LENGTH: u32 = 255u;
+const MAX_HISTORY_LENGTH: u32 = 1023u;
 
 @compute @workgroup_size(256, 1, 1)
 fn compute_main(in: ComputeIn) {
@@ -64,23 +64,15 @@ fn compute_main(in: ComputeIn) {
     }
 
     var cur = unpack_voxel_lighting(cur_voxel_lighting[in.id.x]);
-
-    // let cur_shadow = f32(cur & 1u);
-    // let cur_ao = f32((cur >> 1u) & 0xFFu) / 255.0;
-
     var acc = unpack_voxel_lighting(acc_voxel_lighting[visible.leaf_index]);
-    // let acc_shadow = f32((acc >> 8u) & 0xFFFu) / 4095.0;
-    // let acc_ao = f32(acc >> 20u) / 4095.0;
-    // let history_len = min(MAX_HISTORY_LENGTH, (acc & 0xFFu) + 1u);
+
     acc.history_length = min(MAX_HISTORY_LENGTH, acc.history_length + 1u);
 
     let alpha = 1.0 / f32(acc.history_length);
     acc.shadow = mix(acc.shadow, cur.shadow, alpha);
+    // acc.shadow = cur.shadow;
     acc.irradiance = mix(acc.irradiance, cur.irradiance, alpha);
-    // let res_shadow = mix(acc_shadow, cur_shadow, alpha);
-    // let res_ao = mix(acc_ao, cur_ao, alpha);
 
-    // let res = ((u32(res_ao * 4095.0) & 0xFFFu) << 20u) | ((u32(res_shadow * 4095.0) & 0xFFFu) << 8u) | history_len;
     acc_voxel_lighting[visible.leaf_index] = pack_voxel_lighting(acc);
 }
 

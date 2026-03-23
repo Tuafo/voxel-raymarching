@@ -11,6 +11,7 @@ struct VoxelLighting {
 @group(0) @binding(1) var tex_albedo: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_velocity: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(3) var tex_voxel_id: texture_storage_2d<r32uint, read>;
+@group(0) @binding(4) var tex_specular: texture_storage_2d<rgba16float, read>;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
@@ -86,7 +87,6 @@ fn compute_main(in: ComputeIn) {
     let voxel_id = textureLoad(tex_voxel_id, pos).r;
 
     let lighting = unpack_voxel_lighting(voxel_lighting[voxel_id]);
-    let shadow = 1.0 - lighting.shadow;
 
     let velocity = textureLoad(tex_velocity, pos).rg;
     let packed = textureLoad(tex_normal, pos).r;
@@ -94,7 +94,7 @@ fn compute_main(in: ComputeIn) {
 
     let albedo_sample = textureLoad(tex_albedo, pos);
     let albedo = albedo_sample.rgb;
-    let specular = vec3(0.0);
+    let specular = textureLoad(tex_specular, pos).rgb;
 
     let ls_pos = ray.ls_origin + ray.direction * depth;
     let ws_pos = (model.transform * vec4(ls_pos, 1.0)).xyz;
@@ -106,7 +106,7 @@ fn compute_main(in: ComputeIn) {
     surface.albedo = albedo;
     surface.metallic = voxel.metallic;
     surface.roughness = max(voxel.roughness, min_roughness);
-    surface.shadow = shadow;
+    surface.shadow = lighting.shadow;
     surface.irradiance = lighting.irradiance;
     surface.specular = specular;
     var color = pbr(surface);
@@ -133,7 +133,7 @@ fn compute_main(in: ComputeIn) {
                 color += vec3(surface.metallic);
             }
             case 7u {
-                color += vec3(shadow);
+                color += vec3(lighting.shadow);
             }
             case 8u {
                 color += surface.irradiance;
@@ -218,14 +218,15 @@ fn pbr(in: PbrInput) -> vec3<f32> {
         let vdh = saturate(dot(V, H));
 
         // let sky_irradiance = textureSampleLevel(tex_irradiance, sampler_linear, N.xzy, 0.0).rgb * environment.indirect_sky_intensity;
-        let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, R.xzy, in.roughness * 5.0).rgb * environment.indirect_sky_intensity;
+        // let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, R.xzy, in.roughness * 5.0).rgb * environment.indirect_sky_intensity;
         let sky_brdf = textureSampleLevel(tex_brdf_lut, sampler_linear, vec2(ndv, in.roughness), 0.0).rg;
 
         let diffuse = k_d * in.irradiance * in.albedo / PI;
 
-        let specular = sky_prefilter * (f_0 * sky_brdf.x + sky_brdf.y);
+        // let specular = sky_prefilter * (f_0 * sky_brdf.x + sky_brdf.y);
+        let specular = in.specular * (f_0 * sky_brdf.x + sky_brdf.y);
 
-        indirect = diffuse + specular * 0.25;
+        indirect = diffuse + specular;
     }
     let res = direct + indirect;
     return res;
