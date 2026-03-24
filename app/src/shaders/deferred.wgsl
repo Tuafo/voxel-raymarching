@@ -104,7 +104,7 @@ fn compute_main(in: ComputeIn) {
     surface.uv = uv;
     surface.ws_pos = ws_pos;
     surface.ws_normal = voxel.ws_normal;
-    surface.albedo = albedo;
+    surface.albedo = albedo * select(1.0, voxel.emissive_intensity * 5.0, voxel.is_emissive);
     surface.metallic = voxel.metallic;
     surface.roughness = max(voxel.roughness, min_roughness);
     surface.shadow = lighting.shadow;
@@ -117,7 +117,10 @@ fn compute_main(in: ComputeIn) {
         color *= 0.00001;
         switch environment.debug_view {
             case 1u: {
-                color += surface.albedo;
+                // color += surface.albedo;
+                if voxel.is_emissive {
+                    color += surface.albedo;
+                }
             }
             case 2u {
                 color += depth * 0.005;
@@ -313,12 +316,27 @@ struct Voxel {
     metallic: f32,
     roughness: f32,
     ls_hit_normal: vec3<f32>,
+    is_emissive: bool,
+    emissive_intensity: f32,
 }
 fn unpack_voxel(packed: u32) -> Voxel {
+    let is_dialetric = ((packed >> 10u) & 1u) == 0u;
+    let emissive_flag = ((packed >> 6u) & 1u) == 1u;
+
     var res: Voxel;
     res.ws_normal = decode_normal_octahedral(packed >> 11u);
-    res.metallic = f32((packed >> 10u) & 1u);
-    res.roughness = f32((packed >> 6u) & 15u) / 16.0;
+    if is_dialetric {
+        res.metallic = 0.0;
+        res.roughness = f32((packed >> 6u) & 15u) / 16.0;
+    } else if emissive_flag {
+        res.metallic = 0.0;
+        res.roughness = 1.0;
+        res.is_emissive = true;
+        res.emissive_intensity = f32((packed >> 7u) & 7u) / 7.0;
+    } else {
+        res.metallic = 1.0;
+        res.roughness = f32((packed >> 7u) & 7u) / 7.0;
+    }
 
     let hit_mask = decode_hit_mask((packed >> 3u) & 7u);
     let ray_dir_sign = vec3<f32>(decode_hit_mask(packed & 7u)) * 2.0 - 1.0;

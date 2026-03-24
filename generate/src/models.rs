@@ -879,7 +879,9 @@ fn create_bg_voxelize_shared(
         normal_index: i32,
         metallic_roughness_index: i32,
         double_sided: u32,
-        _pad: f32,
+        is_emissive: u32,
+        emissive_factor: glam::Vec3,
+        emissive_intensity: f32,
     }
     let buffer_materials = ctx
         .device
@@ -898,7 +900,9 @@ fn create_bg_voxelize_shared(
                         normal_index: mat.normal_index,
                         metallic_roughness_index: mat.metallic_roughness_index,
                         double_sided: mat.double_sided as u32,
-                        _pad: 0.0,
+                        is_emissive: mat.is_emissive as u32,
+                        emissive_factor: mat.emissive_factor,
+                        emissive_intensity: mat.emissive_intensity,
                     })
                     .collect::<Vec<MaterialBufferEntry>>(),
             ),

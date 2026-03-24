@@ -25,6 +25,9 @@ pub struct Material {
     pub normal_index: i32,
     pub metallic_roughness_index: i32,
     pub double_sided: bool,
+    pub is_emissive: bool,
+    pub emissive_factor: glam::Vec3,
+    pub emissive_intensity: f32,
 }
 
 #[derive(Debug)]
@@ -272,6 +275,16 @@ impl Material {
             })
             .unwrap_or((glam::Vec4::ZERO, 0.5, 0.0));
 
+        let is_emissive = m.emissive_factor.is_some();
+        let emissive_factor = m.emissive_factor.unwrap_or(glam::Vec3::ZERO);
+        let emissive_intensity = m
+            .extensions
+            .as_ref()
+            .and_then(|ext| ext.get("KHR_materials_emissive_strength"))
+            .and_then(|e| e.get("emissiveStrength"))
+            .and_then(|s| s.as_f64())
+            .unwrap_or(1.0) as f32;
+
         let normal_scale = (&m.normal_texture).as_ref().map(|n| n.scale).unwrap_or(0.0);
         let double_sided = m.double_sided;
 
@@ -284,6 +297,9 @@ impl Material {
             normal_index,
             metallic_roughness_index,
             double_sided,
+            is_emissive,
+            emissive_factor,
+            emissive_intensity,
         }
     }
 }

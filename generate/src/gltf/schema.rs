@@ -7,6 +7,7 @@ use anyhow::{Result, ensure};
 use byteorder::{LittleEndian, ReadBytesExt};
 use glam::{Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Transforms glTF coordinate space (+y, right handed) to (+z, right handed)
 pub const GLTF_Y_UP_TO_Z_UP: glam::Mat4 = glam::mat4(
@@ -597,8 +598,8 @@ pub struct Material {
     pub emissive_texture: Option<TextureInfo>,
 
     /// The factors for the emissive color of the material. This value defines linear multipliers for the sampled texels of the emissive texture.
-    #[serde(default = "default_vec3_zero")]
-    pub emissive_factor: glam::Vec3,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emissive_factor: Option<glam::Vec3>,
 
     /// The material's alpha rendering mode enumeration specifying the interpretation of the alpha value of the base color.
     #[serde(default)]
@@ -611,6 +612,9 @@ pub struct Material {
     /// Specifies whether the material is double sided. When this value is false, back-face culling is enabled. When this value is true, back-face culling is disabled and double-sided lighting is enabled. The back-face **MUST** have its normals reversed before the lighting equation is evaluated.
     #[serde(default)]
     pub double_sided: bool,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<HashMap<String, Value>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

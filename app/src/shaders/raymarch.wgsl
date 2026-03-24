@@ -150,7 +150,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     //     // }
     // }
 
-    let voxel = unpack_voxel(leaf_chunks[hit.leaf_index]);
+    var voxel = unpack_leaf_voxel(leaf_chunks[hit.leaf_index]);
 
     let ws_pos_h = model.transform * vec4<f32>(hit.local_pos, 1.0);
     let ws_pos = ws_pos_h.xyz;
@@ -167,12 +167,12 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let velocity = cur_uv - prev_uv;
 
     let albedo = palette_color(voxel.palette_index);
+    // voxel.roughness = 0.01;
 
     let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal, voxel.roughness);
     let ws_normal = normalize(model.normal_transform * ls_normal);
 
-    let packed = repack_voxel(ws_normal, voxel.metallic, 0.01, hit.hit_mask, ray.direction);
-    // let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, hit.hit_mask, ray.direction);
+    let packed = repack_voxel(ws_normal, voxel.metallic, voxel.roughness, hit.hit_mask, ray.direction, voxel.is_emissive, voxel.emissive_intensity);
 
     if map_result.inserted {
         var visible: VisibleVoxel;
@@ -483,33 +483,60 @@ fn decode_hit_mask(packed: u32) -> vec3<bool> {
     return vec3<bool>(mask);
 }
 
-fn repack_voxel(ws_normal: vec3<f32>, metallic: f32, roughness: f32, hit_mask: vec3<bool>, ray_dir: vec3<f32>) -> u32 {
+fn repack_voxel(ws_normal: vec3<f32>, metallic: f32, roughness: f32, hit_mask: vec3<bool>, ray_dir: vec3<f32>, is_emissive: bool, emissive_intensity: f32) -> u32 {
     let n = encode_normal_octahedral(ws_normal);
-    let m = select(1u, 0u, metallic > 0.5);
-    let r = u32(roughness * 15.0 + 0.5) & 15u;
     let hm = encode_hit_mask(hit_mask) & 7u;
     let dir_mask = encode_hit_mask(vec3<bool>(ray_dir >= vec3(0.0))) & 7u;
+    var m: u32;
+    var r: u32;
+    if is_emissive {
+        m = 1u;
+        r = (u32(emissive_intensity * 7.0 + 0.5) << 1u) | 1u;
+    } else if metallic > 0.5 {
+        m = 1u;
+        r = u32(roughness * 7.0 + 0.5) << 1u;
+    } else {
+        m = 0u;
+        r = u32(roughness * 15.0 + 0.5);
+    }
     return (n << 11u) | (m << 10u) | (r << 6u) | (hm << 3u) | dir_mask;
 }
 
-struct Voxel {
+struct LeafVoxel {
     normal: vec3<f32>,
     metallic: f32,
     roughness: f32,
     palette_index: u32,
+    is_emissive: bool,
+    emissive_intensity: f32,
 }
-fn unpack_voxel(packed: u32) -> Voxel {
-    var res: Voxel;
-    res.normal = decode_normal_octahedral(packed >> 15u);
-    res.metallic = f32((packed >> 14u) & 1u);
-    res.roughness = f32((packed >> 10u) & 0xfu) / 15.0;
+
+fn unpack_leaf_voxel(packed: u32) -> LeafVoxel {
+    let is_dialetric = ((packed >> 14u) & 1u) == 0u;
+    let emissive_flag = ((packed >> 10u) & 1u) == 1u;
+
+    var res: LeafVoxel;
     res.palette_index = packed & 0x3ffu;
+    res.normal = decode_normal_octahedral_leaf(packed >> 15u);
+    if is_dialetric {
+        res.metallic = 0.0;
+        res.roughness = f32((packed >> 10u) & 0xfu) / 15.0;
+    } else if emissive_flag {
+        res.metallic = 0.0;
+        res.roughness = 1.0;
+        res.is_emissive = true;
+        res.emissive_intensity = f32((packed >> 11u) & 7u) / 7.0;
+    } else {
+        res.metallic = 1.0;
+        res.roughness = f32((packed >> 11u) & 7u) / 7.0;
+    }
+
     return res;
 }
 
 /// decodes world space normal from lower 17 bits of u32
 // uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
-fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
+fn decode_normal_octahedral_leaf(packed: u32) -> vec3<f32> {
     let x = f32((packed >> 9u) & 0xffu) / 255.0;
     let y = f32((packed >> 1u) & 0xffu) / 255.0;
     let sgn = f32(packed & 1u) * 2.0 - 1.0;

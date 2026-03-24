@@ -82,13 +82,6 @@ fn compute_main(in: ComputeIn) {
     let voxel_pos = unpack_voxel_pos(visible.pos);
     let voxel_center = vec3<f32>(voxel_pos) + 0.5;
 
-    // let noise = blue_noise(vec2(voxel_pos.xy));
-    // let nx = hash_murmur3(visible.leaf_index);
-    // let ny = hash_murmur3(3u * visible.leaf_index + 17u);
-    // let noise = vec2(
-    //     f32(nx) * 2.3283064365386963e-10,
-    //     f32(ny) * 2.3283064365386963e-10,
-    // );
     let noise = hash_noise(visible.leaf_index);
 
     if !trace_shadow(noise, voxel_center, in.local_index) {
@@ -342,12 +335,27 @@ struct Voxel {
     metallic: f32,
     roughness: f32,
     ls_hit_normal: vec3<f32>,
+    is_emissive: bool,
+    emissive_intensity: f32,
 }
 fn unpack_voxel(packed: u32) -> Voxel {
+    let is_dialetric = ((packed >> 10u) & 1u) == 0u;
+    let emissive_flag = ((packed >> 6u) & 1u) == 1u;
+
     var res: Voxel;
     res.ws_normal = decode_normal_octahedral(packed >> 11u);
-    res.metallic = f32((packed >> 10u) & 1u);
-    res.roughness = f32((packed >> 6u) & 15u) / 16.0;
+    if is_dialetric {
+        res.metallic = 0.0;
+        res.roughness = f32((packed >> 6u) & 15u) / 16.0;
+    } else if emissive_flag {
+        res.metallic = 0.0;
+        res.roughness = 1.0;
+        res.is_emissive = true;
+        res.emissive_intensity = f32((packed >> 7u) & 7u) / 7.0;
+    } else {
+        res.metallic = 1.0;
+        res.roughness = f32((packed >> 7u) & 7u) / 7.0;
+    }
 
     let hit_mask = decode_hit_mask((packed >> 3u) & 7u);
     let ray_dir_sign = vec3<f32>(decode_hit_mask(packed & 7u)) * 2.0 - 1.0;

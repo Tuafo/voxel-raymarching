@@ -12,6 +12,9 @@ struct Material {
     normal_index: i32,
     metallic_roughness_index: i32,
     double_sided: u32,
+    is_emissive: u32,
+    emissive_factor: vec3<f32>,
+    emissive_intensity: f32,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<storage, read> materials: array<Material>;
@@ -226,20 +229,28 @@ fn emit_voxel(center: vec3<f32>) {
     }
     ci >>= 1u;
 
-    let material = materials[primitive.material_id];
-    if material.albedo_index < 0 {
-        return;
-    }
-
     let point = project_onto_plane(center, sample.v0, sample.v1, sample.v2);
     let weights = tri_weights(point, sample.v0, sample.v1, sample.v2);
 
     let uv = weights.x * sample.uv_0 + weights.y * sample.uv_1 + weights.z * sample.uv_2;
 
-    let albedo = textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
+    let material = materials[primitive.material_id];
+
+    var albedo = material.base_albedo;
+    if material.is_emissive != 0u {
+        // we just take the emissive value as the albedo in this case, for packing
+        // reasonable tradeoff since most emissive voxels should be strong enough to drown the actual albedo anyways
+        // todo sample emsissive texture if it exists
+        albedo = vec4(material.emissive_factor, 1.0);
+    } else if material.albedo_index >= 0 {
+        albedo *= textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
+    }
+
     if albedo.a < 0.8 {
+        // todo make this fit the spec w/ alpha coverage blend modes
         return;
     }
+
     let palette_pos = vec3<u32>(albedo.rgb * 255.0 + 0.5);
     let palette_index = textureLoad(tex_palette_lut, palette_pos).r;
 
@@ -253,8 +264,10 @@ fn emit_voxel(center: vec3<f32>) {
         ws_normal,
     );
 
-    let tangent_normal = textureSampleLevel(textures[material.normal_index], tex_sampler, uv, 0.0).rgb * 2.0 - 1.0;
-    ws_normal = normalize(tbn * tangent_normal);
+    if material.normal_index >= 0 {
+        let tangent_normal = textureSampleLevel(textures[material.normal_index], tex_sampler, uv, 0.0).rgb * 2.0 - 1.0;
+        ws_normal = normalize(tbn * tangent_normal);
+    }
 
     var metallic = material.base_metallic;
     var roughness = material.base_roughness;
@@ -264,7 +277,13 @@ fn emit_voxel(center: vec3<f32>) {
         metallic *= mr.b;
     }
 
-    let packed = pack_voxel(ws_normal, metallic, roughness, palette_index);
+    var voxel: LeafVoxel;
+    voxel.palette_index = palette_index;
+    voxel.normal = ws_normal;
+    voxel.roughness = roughness;
+    voxel.is_emissive = material.is_emissive != 0u;
+    voxel.emissive_intensity = material.emissive_intensity;
+    let packed = pack_voxel(voxel);
 
     let chunk_offset = vec3<u32>(
         ci % raw_chunks_bds.x,
@@ -347,29 +366,35 @@ fn project_onto_plane(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>, c: vec3<f32>) ->
     return p - dist * normal;
 }
 
-fn pack_voxel(normal: vec3<f32>, metallic: f32, roughness: f32, palette_index: u32) -> u32 {
-    let n = encode_normal_octahedral(normal);
-    let m = select(1u, 0u, metallic > 0.5);
-    let r = u32(roughness * 15.0 + 0.5);
-    return (n << 15u) | (m << 14u) | (r << 10u) | palette_index;
+struct LeafVoxel {
+    normal: vec3<f32>,
+    metallic: f32,
+    roughness: f32,
+    palette_index: u32,
+    is_emissive: bool,
+    emissive_intensity: f32,
 }
 
-/// decodes world space normal from lower 17 bits of u32
-// uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
-fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
-    let x = f32((packed >> 9u) & 0xffu) / 255.0;
-    let y = f32((packed >> 1u) & 0xffu) / 255.0;
-    let sgn = f32(packed & 1u) * 2.0 - 1.0;
-    var res = vec3<f32>(0.);
-    res.x = x - y;
-    res.y = x + y - 1.0;
-    res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
-    return normalize(res);
+fn pack_voxel(voxel: LeafVoxel) -> u32 {
+    let n = encode_normal_octahedral_leaf(voxel.normal);
+    var m: u32;
+    var r: u32;
+    if voxel.is_emissive {
+        m = 1u;
+        r = (u32(saturate(voxel.emissive_intensity) * 7.0 + 0.5) << 1u) | 1u;
+    } else if voxel.metallic > 0.5 {
+        m = 1u;
+        r = u32(saturate(voxel.roughness) * 7.0 + 0.5) << 1u;
+    } else {
+        m = 0u;
+        r = u32(saturate(voxel.roughness) * 15.0 + 0.5);
+    }
+    return (n << 15u) | (m << 14u) | (r << 10u) | voxel.palette_index;
 }
 
 /// encodes world space normal in lower 17 bits of u32
 // uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
-fn encode_normal_octahedral(normal: vec3<f32>) -> u32 {
+fn encode_normal_octahedral_leaf(normal: vec3<f32>) -> u32 {
     var n = normal / (abs(normal.x) + abs(normal.y) + abs(normal.z));
     var nrm = vec2<f32>(0.);
     nrm.y = n.y * 0.5 + 0.5;

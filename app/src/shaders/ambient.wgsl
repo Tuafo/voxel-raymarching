@@ -125,6 +125,10 @@ fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_norma
 
     let hit = raymarch(ray);
 
+    let ws_ray_dir = normalize((model.transform * vec4(dir, 0.0)).xyz);
+    var sky_color = textureSampleLevel(tex_skybox, sampler_linear, ws_ray_dir.xzy, 0.0).rgb;
+    sky_color = min(sky_color, vec3(15.0));
+
     if hit.hit {
         let secondary = unpack_leaf_voxel(leaf_chunks[hit.leaf_index]);
         let albedo = palette_color(secondary.palette_index);
@@ -139,16 +143,20 @@ fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_norma
         let direct = SUN_COLOR * ndl * lighting.shadow;
         let indirect = lighting.irradiance;
 
-        let diffuse = (direct + lighting.irradiance) * albedo;
+        var emissive = vec3(0.0);
+        if secondary.is_emissive {
+            emissive = albedo * secondary.emissive_intensity * 5.0;
+        }
 
-        let ao_weight = saturate(hit.depth / f32(environment.max_ambient_distance));
+        let diffuse = (direct + lighting.irradiance) * albedo + emissive;
 
-        return AmbientResult(diffuse, ao_weight * ao_weight);
+        var ao_weight = saturate(hit.depth / f32(environment.max_ambient_distance));
+        ao_weight *= ao_weight;
+
+        let radiance = mix(diffuse, sky_color, ao_weight);
+
+        return AmbientResult(radiance, ao_weight);
     } else {
-        let ws_ray_dir = normalize((model.transform * vec4(dir, 0.0)).xyz);
-        var sky_color = textureSampleLevel(tex_skybox, sampler_linear, ws_ray_dir.xzy, 0.0).rgb;
-        sky_color = min(sky_color, vec3(15.0));
-
         return AmbientResult(sky_color, 1.0);
     }
 }
@@ -372,12 +380,27 @@ struct Voxel {
     metallic: f32,
     roughness: f32,
     ls_hit_normal: vec3<f32>,
+    is_emissive: bool,
+    emissive_intensity: f32,
 }
 fn unpack_voxel(packed: u32) -> Voxel {
+    let is_dialetric = ((packed >> 10u) & 1u) == 0u;
+    let emissive_flag = ((packed >> 6u) & 1u) == 1u;
+
     var res: Voxel;
     res.ws_normal = decode_normal_octahedral(packed >> 11u);
-    res.metallic = f32((packed >> 10u) & 1u);
-    res.roughness = f32((packed >> 6u) & 15u) / 16.0;
+    if is_dialetric {
+        res.metallic = 0.0;
+        res.roughness = f32((packed >> 6u) & 15u) / 16.0;
+    } else if emissive_flag {
+        res.metallic = 0.0;
+        res.roughness = 1.0;
+        res.is_emissive = true;
+        res.emissive_intensity = f32((packed >> 7u) & 7u) / 7.0;
+    } else {
+        res.metallic = 1.0;
+        res.roughness = f32((packed >> 7u) & 7u) / 7.0;
+    }
 
     let hit_mask = decode_hit_mask((packed >> 3u) & 7u);
     let ray_dir_sign = vec3<f32>(decode_hit_mask(packed & 7u)) * 2.0 - 1.0;
@@ -413,19 +436,36 @@ struct LeafVoxel {
     metallic: f32,
     roughness: f32,
     palette_index: u32,
+    is_emissive: bool,
+    emissive_intensity: f32,
 }
+
 fn unpack_leaf_voxel(packed: u32) -> LeafVoxel {
+    let is_dialetric = ((packed >> 14u) & 1u) == 0u;
+    let emissive_flag = ((packed >> 10u) & 1u) == 1u;
+
     var res: LeafVoxel;
-    res.normal = decode_leaf_normal_octahedral(packed >> 15u);
-    res.metallic = f32((packed >> 14u) & 1u);
-    res.roughness = f32((packed >> 10u) & 0xfu) / 15.0;
     res.palette_index = packed & 0x3ffu;
+    res.normal = decode_normal_octahedral_leaf(packed >> 15u);
+    if is_dialetric {
+        res.metallic = 0.0;
+        res.roughness = f32((packed >> 10u) & 0xfu) / 15.0;
+    } else if emissive_flag {
+        res.metallic = 0.0;
+        res.roughness = 1.0;
+        res.is_emissive = true;
+        res.emissive_intensity = f32((packed >> 11u) & 7u) / 7.0;
+    } else {
+        res.metallic = 1.0;
+        res.roughness = f32((packed >> 11u) & 7u) / 7.0;
+    }
+
     return res;
 }
 
 /// decodes world space normal from lower 17 bits of u32
 // uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
-fn decode_leaf_normal_octahedral(packed: u32) -> vec3<f32> {
+fn decode_normal_octahedral_leaf(packed: u32) -> vec3<f32> {
     let x = f32((packed >> 9u) & 0xffu) / 255.0;
     let y = f32((packed >> 1u) & 0xffu) / 255.0;
     let sgn = f32(packed & 1u) * 2.0 - 1.0;
