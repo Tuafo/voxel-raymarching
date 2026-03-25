@@ -12,10 +12,10 @@ struct VoxelLighting {
 @group(0) @binding(1) var tex_albedo: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(2) var tex_velocity: texture_storage_2d<rgba16float, read>;
 @group(0) @binding(3) var tex_voxel_id: texture_storage_2d<r32uint, read>;
-@group(0) @binding(4) var tex_specular: texture_storage_2d<rgba16float, read>;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
+@group(1) @binding(2) var tex_specular: texture_storage_2d<rgba16float, read>;
 
 @group(2) @binding(0) var sampler_linear: sampler;
 @group(2) @binding(1) var sampler_noise: sampler;
@@ -27,7 +27,10 @@ struct VoxelLighting {
 
 struct Environment {
     sun_direction: vec3<f32>,
+    sun_intensity: f32,
+    sun_color: vec3<f32>,
     shadow_bias: f32,
+    skybox_rotation: vec2<f32>,
     camera: Camera,
     prev_camera: Camera,
     shadow_spread: f32,
@@ -51,7 +54,6 @@ struct Camera {
 struct FrameMetadata {
     frame_id: u32,
     taa_enabled: u32,
-    fxaa_enabled: u32,
 }
 struct Model {
     transform: mat4x4<f32>,
@@ -62,6 +64,8 @@ struct Model {
 @group(3) @binding(0) var<uniform> environment: Environment;
 @group(3) @binding(1) var<uniform> frame: FrameMetadata;
 @group(3) @binding(2) var<uniform> model: Model;
+
+var<private> sky_ray_dir: vec3<f32>;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
@@ -78,9 +82,15 @@ fn compute_main(in: ComputeIn) {
 
     let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
 
+    sky_ray_dir = vec3(
+        ray.ws_direction.x * environment.skybox_rotation.x - ray.ws_direction.y * environment.skybox_rotation.y,
+        ray.ws_direction.x * environment.skybox_rotation.y + ray.ws_direction.y * environment.skybox_rotation.x,
+        ray.ws_direction.z,
+    );
+
     let depth = textureLoad(tex_depth, pos).r;
     if depth < 0.0 {
-        var sky = textureSampleLevel(tex_skybox, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
+        var sky = textureSampleLevel(tex_skybox, sampler_linear, sky_ray_dir.xzy, 0.0).rgb;
         textureStore(out_color, vec2<i32>(in.id.xy), vec4(sky, 1.0));
         return;
     }
@@ -107,70 +117,55 @@ fn compute_main(in: ComputeIn) {
     surface.albedo = albedo * select(1.0, voxel.emissive_intensity * 5.0, voxel.is_emissive);
     surface.metallic = voxel.metallic;
     surface.roughness = max(voxel.roughness, min_roughness);
-    surface.shadow = lighting.shadow;
+    surface.shadow = 1.0 - lighting.shadow;
     surface.irradiance = lighting.irradiance;
     surface.ao = lighting.ao;
     surface.specular = specular;
     var color = pbr(surface);
 
-    if environment.debug_view != 0u {
-        color *= 0.00001;
-        switch environment.debug_view {
-            case 1u: {
-                // color += surface.albedo;
-                if voxel.is_emissive {
-                    color += surface.albedo;
-                }
-            }
-            case 2u {
-                color += depth * 0.005;
-            }
-            case 3u {
-                color += voxel.ls_hit_normal;
-            }
-            case 4u {
-                color += voxel.ws_normal;
-            }
-            case 5u {
-                color += vec3(surface.roughness);
-            }
-            case 6u {
-                color += vec3(surface.metallic);
-            }
-            case 7u {
-                color += vec3(lighting.shadow);
-            }
-            case 8u {
-                // color += surface.irradiance;
-                color += vec3(lighting.ao);
-            }
-            case 9u {
-                // color += vec3(surface.specular);
-                color += specc;
-            }
-            case 10u {
-                color += vec3(abs(velocity), 0.0);
-            }
-            case 11u {
-                color += textureSampleLevel(tex_skybox, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
-            }
-            case 12u {
-                color += textureSampleLevel(tex_irradiance, sampler_linear, ray.ws_direction.xzy, 0.0).rgb;
-            }
-            case 13u {
-                let t = cos(f32(frame.frame_id) / 300.0) * 0.5 + 0.5;
-                color += textureSampleLevel(tex_prefilter, sampler_linear, ray.ws_direction.xzy, t * 5.0).rgb;
-            }
-            default {}
+    switch environment.debug_view {
+        case 1u: {
+            color = surface.albedo;
         }
+        case 2u {
+            color = vec3(depth) * 0.005;
+        }
+        case 3u {
+            color = voxel.ls_hit_normal;
+        }
+        case 4u {
+            color = voxel.ws_normal;
+        }
+        case 5u {
+            color = vec3(surface.roughness);
+        }
+        case 6u {
+            color = vec3(surface.metallic);
+        }
+        case 7u {
+            color = vec3(surface.shadow);
+        }
+        case 8u {
+            color = surface.irradiance;
+        }
+        case 9u {
+            color = vec3(surface.specular);
+        }
+        case 10u {
+            color = vec3(abs(velocity), 0.0);
+        }
+        case 11u {
+            color = textureSampleLevel(tex_skybox, sampler_linear, sky_ray_dir, 0.0).rgb;
+        }
+        case 12u {
+            color = textureSampleLevel(tex_irradiance, sampler_linear, sky_ray_dir, 0.0).rgb;
+        }
+        case 13u {
+            let t = cos(f32(frame.frame_id) / 300.0) * 0.5 + 0.5;
+            color = textureSampleLevel(tex_prefilter, sampler_linear, sky_ray_dir, t * 5.0).rgb;
+        }
+        default {}
     }
-
-    // color *= 0.000001;
-    // color += vec3(shadow);
-
-    // if illumination.b > 0.5 {
-    //     color = color + vec3(0.2, 0.0, 0.0);
-    // }
 
     textureStore(out_color, vec2<i32>(in.id.xy), vec4(color, 1.0));
 }
@@ -197,8 +192,6 @@ fn pbr(in: PbrInput) -> vec3<f32> {
     let H = normalize(V + L);
     let R = reflect(-V, N);
 
-    const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 3.0;
-
     var direct: vec3<f32>;
     {
         let f_0 = mix(vec3(0.04), in.albedo, in.metallic);
@@ -216,7 +209,7 @@ fn pbr(in: PbrInput) -> vec3<f32> {
         let specular = ndf * geom * k_s / max(4.0 * ndv * ndl, 0.000001);
 
         let brdf = diffuse + specular;
-        direct = brdf * SUN_COLOR * in.shadow * ndl;
+        direct = brdf * environment.sun_color * environment.sun_intensity * in.shadow * ndl;
     }
     var indirect: vec3<f32>;
     {
@@ -227,18 +220,23 @@ fn pbr(in: PbrInput) -> vec3<f32> {
         let ndv = clamp(dot(N, V), 0.0001, 1.0);
         let vdh = saturate(dot(V, H));
 
-        let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, R.xzy, in.roughness * 5.0).rgb * environment.indirect_sky_intensity;
+        let sky_reflect_dir = vec3(
+            R.x * environment.skybox_rotation.x - R.y * environment.skybox_rotation.y,
+            R.x * environment.skybox_rotation.y + R.y * environment.skybox_rotation.x,
+            R.z,
+        );
+        let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, sky_reflect_dir.xzy, in.roughness * 5.0).rgb * environment.indirect_sky_intensity;
         let sky_brdf = textureSampleLevel(tex_brdf_lut, sampler_linear, vec2(ndv, in.roughness), 0.0).rg;
 
         let diffuse = k_d * in.irradiance * in.albedo / PI;
 
-        let smoothing = exp2(-16.0 * in.roughness - 1.0);
-        let specular_occlusion = saturate(pow(ndv + in.ao, smoothing) - 1.0 + in.ao);
+        // let smoothing = exp2(-16.0 * in.roughness - 1.0);
+        // let specular_occlusion = saturate(pow(ndv + in.ao, smoothing) - 1.0 + in.ao);
 
-        let ibl_occluded = specular_occlusion * sky_prefilter;
-        specc = ibl_occluded;
+        // let ibl_occluded = specular_occlusion * sky_prefilter;
+        // specc = ibl_occluded;
 
-        // let specular = ibl_occluded * (f_0 * sky_brdf.x + sky_brdf.y);
+        // let specular = 1.0 * (f_0 * sky_brdf.x + sky_brdf.y);
         let specular = in.specular * (f_0 * sky_brdf.x + sky_brdf.y);
 
         indirect = diffuse + specular;

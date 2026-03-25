@@ -1,33 +1,41 @@
 @group(0) @binding(0) var tex_color: texture_2d<f32>;
 @group(0) @binding(1) var main_sampler: sampler;
+@group(0) @binding(2) var tex_tonemap_lut: texture_3d<f32>;
 
+struct PostFxSettings {
+    fxaa_enabled: u32,
+    exposure: f32,
+    tonemapping: u32,
+}
 struct Environment {
-	sun_direction: vec3<f32>,
-	shadow_bias: f32,
-	camera: Camera,
-	prev_camera: Camera,
-	shadow_spread: f32,
-	filter_shadows: u32,
-	shadow_filter_radius: f32,
-	max_ambient_distance: u32,
+    sun_direction: vec3<f32>,
+    sun_intensity: f32,
+    sun_color: vec3<f32>,
+    shadow_bias: f32,
+    skybox_rotation: vec2<f32>,
+    camera: Camera,
+    prev_camera: Camera,
+    shadow_spread: f32,
+    filter_shadows: u32,
+    shadow_filter_radius: f32,
+    max_ambient_distance: u32,
     smooth_normal_factor: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }
 struct Camera {
-	view_proj: mat4x4<f32>,
-	inv_view_proj: mat4x4<f32>,
-	ws_position: vec3<f32>,
-	forward: vec3<f32>,
-	near: f32,
-	jitter: vec2<f32>,
-	far: f32,
-	fov: f32,
+    view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
+    ws_position: vec3<f32>,
+    forward: vec3<f32>,
+    near: f32,
+    jitter: vec2<f32>,
+    far: f32,
+    fov: f32,
 }
 struct FrameMetadata {
     frame_id: u32,
     taa_enabled: u32,
-    fxaa_enabled: u32,
 }
 struct Model {
     transform: mat4x4<f32>,
@@ -38,6 +46,8 @@ struct Model {
 @group(1) @binding(0) var<uniform> environment: Environment;
 @group(1) @binding(1) var<uniform> frame: FrameMetadata;
 @group(1) @binding(2) var<uniform> model: Model;
+
+@group(2) @binding(0) var<uniform> settings: PostFxSettings;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -63,25 +73,46 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4(textureLoad(tex_color, pos, 0).rgb, 1.0);
     }
 
-    var color = vec3(0.0);
-    if frame.fxaa_enabled == 0u {
+    var color: vec3<f32>;
+
+    if settings.fxaa_enabled == 0u {
         color = textureLoad(tex_color, pos, 0).rgb;
     } else {
         color = fxaa(in.position, in.uv);
     }
 
-    color = tonemap(color);
-    color = pow(color, vec3(1.0 / 2.2));
+    color = color * settings.exposure;
+
+    switch settings.tonemapping {
+        case 0u: {
+            color = saturate(color);
+        }
+        case 1u: {
+            color = tonemap_aces_narkowicz(color);
+        }
+        case 2u: {
+            color = tonemap_tony_mcmapface(color);
+        }
+        default {}
+    }
+
+    // gamma correction to SRGB is done automatically by hardware here
+    // for all platforms, i think
     return vec4(color, 1.0);
 }
 
-fn tonemap(x: vec3<f32>) -> vec3<f32> {
+fn tonemap_aces_narkowicz(x: vec3<f32>) -> vec3<f32> {
     const a = 2.51;
     const b = 0.03;
     const c = 2.43;
     const d = 0.59;
     const e = 0.14;
     return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+
+fn tonemap_tony_mcmapface(x: vec3<f32>) -> vec3<f32> {
+    let pos = (x / (x + 1.0)) * (47.0 / 48.0) + 0.5 / 48.0;
+    return textureSampleLevel(tex_tonemap_lut, main_sampler, pos, 0.0).rgb;
 }
 
 const EDGE_THRESHOLD_MIN: f32 = 0.0312;
@@ -150,7 +181,7 @@ fn fxaa(position: vec4<f32>, uv: vec2<f32>) -> vec3<f32> {
         p_luma_delta = tex_luma(uv, p_uv) - edge_luma;
         reached_end = abs(p_luma_delta) >= grad_threshold;
     }
-    if (!reached_end) {
+    if !reached_end {
         p_uv += edge_step * 2.0 * EDGE_STEPS[9];
     }
 
@@ -163,7 +194,7 @@ fn fxaa(position: vec4<f32>, uv: vec2<f32>) -> vec3<f32> {
         n_luma_delta = tex_luma(uv, n_uv) - edge_luma;
         reached_end = abs(n_luma_delta) >= grad_threshold;
     }
-    if (!reached_end) {
+    if !reached_end {
         n_uv -= edge_step * 2.0 * EDGE_STEPS[9];
     }
 
@@ -174,7 +205,7 @@ fn fxaa(position: vec4<f32>, uv: vec2<f32>) -> vec3<f32> {
     let delta_sign = select(n_luma_delta >= 0., p_luma_delta >= 0., pos_distance <= neg_distance);
 
     var blend_factor = 0.0;
-    if (delta_sign != (luma_ctr - edge_luma >= 0.)) {
+    if delta_sign != (luma_ctr - edge_luma >= 0.) {
         blend_factor = 0.5 - min_distance / (pos_distance + neg_distance);
     }
 

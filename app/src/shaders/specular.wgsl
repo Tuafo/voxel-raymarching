@@ -1,4 +1,5 @@
 @group(0) @binding(0) var tex_out_specular: texture_storage_2d<rgba16float, write>;
+// @group(0) @binding(1) var tex_out_sepcular_velocity: texture_storage_2d<rgba16float, write>;
 
 @group(1) @binding(0) var tex_normal: texture_storage_2d<r32uint, read>;
 @group(1) @binding(1) var tex_depth: texture_storage_2d<r32float, read>;
@@ -38,7 +39,10 @@ struct VoxelLighting {
 
 struct Environment {
     sun_direction: vec3<f32>,
+    sun_intensity: f32,
+    sun_color: vec3<f32>,
     shadow_bias: f32,
+    skybox_rotation: vec2<f32>,
     camera: Camera,
     prev_camera: Camera,
     shadow_spread: f32,
@@ -62,7 +66,6 @@ struct Camera {
 struct FrameMetadata {
     frame_id: u32,
     taa_enabled: u32,
-    fxaa_enabled: u32,
 }
 struct Model {
     transform: mat4x4<f32>,
@@ -148,7 +151,7 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
     }
 
     var in: Ray;
-    in.origin = ls_pos + environment.shadow_bias * ls_normal;
+    in.origin = ls_pos + environment.shadow_bias * ls_hit_normal;
     in.direction = dir;
 
     let hit = raymarch(in);
@@ -157,14 +160,16 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
         let secondary = unpack_leaf_voxel(leaf_chunks[hit.leaf_index]);
         let albedo = palette_color(secondary.palette_index);
 
-        let lighting = unpack_voxel_lighting(acc_voxel_lighting[hit.leaf_index]);
+        var lighting = unpack_voxel_lighting(acc_voxel_lighting[hit.leaf_index]);
+        if lighting.history_length == 0u {
+            // lighting.irradiance = textureSampleLevel(tex_skybox, sampler_linear, secondary.normal.xzy, 0.0).rgb;
+            // lighting.irradiance = min(lighting.irradiance, vec3(15.0)) * environment.indirect_sky_intensity;
+            lighting.shadow = 0.0;
+        }
 
-        const SUN_COLOR: vec3<f32> = vec3<f32>(0.97, 0.855, 0.775) * 3.0;
-        let N = normalize(model.normal_transform * secondary.normal);
-        let L = normalize(environment.sun_direction);
-        let ndl = max(dot(N, L), 0.0);
+        let ndl = max(dot(secondary.normal, environment.sun_direction), 0.0);
 
-        let direct = SUN_COLOR * ndl * lighting.shadow;
+        let direct = environment.sun_color * environment.sun_intensity * ndl * (1.0 - lighting.shadow);
         let indirect = lighting.irradiance;
 
         var emissive = vec3(0.0);
@@ -177,8 +182,13 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
         return diffuse;
     } else {
         let ws_ray_dir = normalize((model.transform * vec4(dir, 0.0)).xyz);
-        var sky_color = textureSampleLevel(tex_skybox, sampler_linear, ws_ray_dir.xzy, 0.0).rgb;
-        sky_color = min(sky_color, vec3(15.0));
+        let rot_dir = vec3(
+            ws_ray_dir.x * environment.skybox_rotation.x - ws_ray_dir.y * environment.skybox_rotation.y,
+            ws_ray_dir.x * environment.skybox_rotation.y + ws_ray_dir.y * environment.skybox_rotation.x,
+            ws_ray_dir.z,
+        );
+        var sky_color = textureSampleLevel(tex_skybox, sampler_linear, rot_dir.xzy, 0.0).rgb;
+        sky_color = min(sky_color, vec3(15.0)) * environment.indirect_sky_intensity;
         return sky_color;
     }
 }

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::{
-    config::{DEBUG_VIEWS, DebugView},
+    config::{DEBUG_VIEWS, DebugView, TONEMAPPING_ALGORITHMS, TonemappingAlgorithm},
     ui::UiCtx,
 };
 
@@ -19,6 +19,7 @@ pub struct DebugWindow {
     pub camera_far: f64,
     pub sun_direction: glam::Vec3,
     view: (&'static str, DebugView),
+    tonemapping: (&'static str, TonemappingAlgorithm),
     limit_fps: bool,
     max_fps: u32,
 }
@@ -26,7 +27,8 @@ pub struct DebugWindow {
 impl DebugWindow {
     pub fn new() -> Self {
         Self {
-            view: DEBUG_VIEWS[0],
+            view: DEBUG_VIEWS[DebugView::default() as usize],
+            tonemapping: TONEMAPPING_ALGORITHMS[TonemappingAlgorithm::default() as usize],
             ..Default::default()
         }
     }
@@ -124,14 +126,6 @@ impl DebugWindow {
                 ui.checkbox(&mut config.print_debug_info, "");
                 ui.end_row();
 
-                ui.label("FXAA");
-                ui.checkbox(&mut config.fxaa, "");
-                ui.end_row();
-
-                ui.label("TAA");
-                ui.checkbox(&mut config.taa, "");
-                ui.end_row();
-
                 ui.label("View");
                 egui::ComboBox::from_label("")
                     .selected_text(self.view.0)
@@ -140,17 +134,33 @@ impl DebugWindow {
                             ui.selectable_value(&mut self.view, *view, view.0);
                         }
                     });
+            });
+
+            grid(ui, "Post Processing", |ui| {
+                ui.label("FXAA");
+                ui.checkbox(&mut config.fxaa, "");
                 ui.end_row();
 
-                if ui.button("Reload Scene").clicked() {
-                    // let src = std::include_bytes!("../../assets/models/sponza.glb");
-                    // let mut src = std::io::BufReader::new(std::io::Cursor::new(src));
-                    // generate::voxelize(&mut src, ctx.device, ctx.queue, None, 16).unwrap();
-                }
+                ui.label("TAA");
+                ui.checkbox(&mut config.taa, "");
+                ui.end_row();
+
+                ui.label("Exposure");
+                ui.add(egui::Slider::new(&mut config.exposure, 0.0..=10.0));
+                ui.end_row();
+
+                ui.label("Tonemapping");
+                egui::ComboBox::from_label("")
+                    .selected_text(self.tonemapping.0)
+                    .show_ui(ui, |ui| {
+                        for alg in TONEMAPPING_ALGORITHMS {
+                            ui.selectable_value(&mut self.tonemapping, *alg, alg.0);
+                        }
+                    });
             });
 
             grid(ui, "Lighting", |ui| {
-                ui.label("Azimuth");
+                ui.label("Sun Azimuth");
                 ui.add(
                     egui::Slider::new(
                         &mut config.sun_azimuth,
@@ -160,11 +170,21 @@ impl DebugWindow {
                 );
                 ui.end_row();
 
-                ui.label("Altitutde");
+                ui.label("Sun Altitutde");
                 ui.add(
                     egui::Slider::new(
                         &mut config.sun_altitude,
                         -std::f32::consts::FRAC_PI_2..=std::f32::consts::FRAC_PI_2,
+                    )
+                    .suffix(" rad"),
+                );
+                ui.end_row();
+
+                ui.label("Sky Azimuth");
+                ui.add(
+                    egui::Slider::new(
+                        &mut config.skybox_rotation,
+                        -std::f32::consts::PI..=std::f32::consts::PI,
                     )
                     .suffix(" rad"),
                 );
@@ -180,7 +200,7 @@ impl DebugWindow {
                 ui.label("Indirect Sky Intensity");
                 ui.add(egui::Slider::new(
                     &mut config.indirect_sky_intensity,
-                    0.0..=1.0,
+                    0.0..=10.0,
                 ));
                 ui.end_row();
 
@@ -212,6 +232,7 @@ impl DebugWindow {
         });
 
         ctx.config.view = self.view.1;
+        ctx.config.tonemapping = self.tonemapping.1;
 
         if ctx.config.max_fps.is_some() != self.limit_fps
             || ctx.config.max_fps.is_some_and(|m| m != self.max_fps)

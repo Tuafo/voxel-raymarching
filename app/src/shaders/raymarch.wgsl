@@ -43,7 +43,10 @@ struct VisibleVoxel {
 
 struct Environment {
     sun_direction: vec3<f32>,
+    sun_intensity: f32,
+    sun_color: vec3<f32>,
     shadow_bias: f32,
+    skybox_rotation: vec2<f32>,
     camera: Camera,
     prev_camera: Camera,
     shadow_spread: f32,
@@ -67,7 +70,6 @@ struct Camera {
 struct FrameMetadata {
     frame_id: u32,
     taa_enabled: u32,
-    fxaa_enabled: u32,
 }
 struct Model {
     transform: mat4x4<f32>,
@@ -167,7 +169,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let velocity = cur_uv - prev_uv;
 
     let albedo = palette_color(voxel.palette_index);
-    // voxel.roughness = 0.01;
+    voxel.roughness = 0.01;
 
     let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal, voxel.roughness);
     let ws_normal = normalize(model.normal_transform * ls_normal);

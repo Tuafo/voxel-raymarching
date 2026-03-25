@@ -16,36 +16,10 @@ fn compute_main(in: ComputeIn) {
 
     let ndv = uv.x;
     let roughness = uv.y;
-    
+
     let res = integrate_brdf(roughness, ndv);
-    
+
     textureStore(tex_out, in.id.xy, vec4<f32>(res, 0.0, 1.0));
-
-
-    // let ndv = uv.x;
-    // let rough = uv.y;
-
-    // let v = vec3<f32>(sqrt(1.0 - ndv * ndv), 0.0, ndv);
-    // var res = vec2<f32>(0.0);
-    // let n = vec3<f32>(0.0, 0.0, 1.0);
-
-    // for (var i: u32 = 0; i < sample_count; i++) {
-    //     let x_i: vec2<f32> = hammersley(i);
-    //     let h: vec3<f32> = importance_sample_ggx(x_i, n, rough);
-    //     let l: vec3<f32> = normalize(2.0 * dot(v, h) * h - v);
-
-    //     let ndl: f32 = max(l.z, 0.0);
-    //     let ndh: f32 = max(h.z, 0.0);
-    //     let vdh: f32 = max(dot(v, h), 0.0);
-
-    //     if (ndl > 0.0) {
-    //         let v_pdf: f32 = geometry_smith(ndv, ndl, rough) * vdh * ndl / max(ndh;
-    //         let g_vis: f32 = (g * vdh) / (ndh * ndv);
-    //         let fc: f32 = pow(1.0 - vdh, 5.0);
-
-    //         res += vec2<f32>((1.0 - fc) * g_vis, fc * g_vis);
-    //     }
-    // }
 }
 
 fn integrate_brdf(roughness: f32, ndv: f32) -> vec2<f32> {
@@ -53,7 +27,7 @@ fn integrate_brdf(roughness: f32, ndv: f32) -> vec2<f32> {
     let V = vec3(
         sqrt(1.0 - ndv * ndv), // sin
         0.0,
-        ndv // cos
+        ndv// cos
     );
 
     var a = 0.0;
@@ -61,7 +35,7 @@ fn integrate_brdf(roughness: f32, ndv: f32) -> vec2<f32> {
 
     for (var i = 0u; i < sample_count; i++) {
         let x_i = hammersley(i);
-        
+
         let H = importance_sample_ggx(x_i, N, roughness);
         let L = 2.0 * dot(V, H) * H - V;
 
@@ -72,12 +46,12 @@ fn integrate_brdf(roughness: f32, ndv: f32) -> vec2<f32> {
         if ndl > 0.0 {
             let v_pdf = geometry_smith(ndv, ndl, roughness) * vdh * ndl / max(ndh, 0.001);
             let f_c = pow(1.0 - vdh, 5.0);
-            
+
             a += (1.0 - f_c) * v_pdf;
             b += f_c * v_pdf;
         }
     }
-    
+
     return 4.0 * vec2<f32>(a, b) / f32(sample_count);
 }
 
@@ -85,20 +59,20 @@ fn geometry_smith(ndv: f32, ndl: f32, roughness: f32) -> f32 {
     let a = pow(roughness, 4.0);
     let ggx_v = ndl * sqrt(ndv * ndv * (1.0 - a) + a);
     let ggx_l = ndv * sqrt(ndl * ndl * (1.0 - a) + a);
-    return 0.5 / (ggx_v + ggx_l); 
+    return 0.5 / (ggx_v + ggx_l);
 }
 
 fn importance_sample_ggx(x_i: vec2<f32>, N: vec3<f32>, roughness: f32) -> vec3<f32> {
     let a: f32 = roughness * roughness;
-    
+
     let phi: f32 = 2.0 * PI * x_i.x;
     let cos_t: f32 = sqrt((1.0 - x_i.y) / (1.0 + (a * a - 1.0) * x_i.y));
     let sin_t: f32 = sqrt(1.0 - cos_t * cos_t);
-    
+
     let h = vec3<f32>(cos(phi) * sin_t, sin(phi) * sin_t, cos_t);
 
     var up: vec3<f32>;
-    if (abs(N.z) < 0.999) {
+    if abs(N.z) < 0.999 {
         up = vec3<f32>(0.0, 0.0, 1.0);
     }
     else {
@@ -121,5 +95,5 @@ fn rad_inverse_vdc(x: u32) -> f32 {
 }
 
 fn hammersley(i: u32) -> vec2<f32> {
-    return vec2<f32>(f32(i)/f32(sample_count), rad_inverse_vdc(i));
+    return vec2<f32>(f32(i) / f32(sample_count), rad_inverse_vdc(i));
 }

@@ -23,6 +23,7 @@ pub struct Material {
     pub normal_scale: f32,
     pub albedo_index: i32,
     pub normal_index: i32,
+    pub emissive_index: i32,
     pub metallic_roughness_index: i32,
     pub double_sided: bool,
     pub is_emissive: bool,
@@ -101,6 +102,11 @@ impl Scene {
         for material in &materials {
             if material.albedo_index >= 0 {
                 if let Some(texture) = textures.get_mut(material.albedo_index as usize) {
+                    texture.encoding = TextureEncoding::Srgb;
+                }
+            }
+            if material.emissive_index >= 0 {
+                if let Some(texture) = textures.get_mut(material.emissive_index as usize) {
                     texture.encoding = TextureEncoding::Srgb;
                 }
             }
@@ -255,6 +261,12 @@ impl Material {
             .and_then(|tex| tex.source)
             .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
             .unwrap_or(-1);
+        let emissive_index = (&m.emissive_texture)
+            .as_ref()
+            .and_then(|info| gltf.meta.textures.get(info.index as usize))
+            .and_then(|tex| tex.source)
+            .and_then(|img_index| img_index_map.get(&img_index).map(|i| *i as i32))
+            .unwrap_or(-1);
         let metallic_roughness_index = m
             .pbr_metallic_roughness
             .as_ref()
@@ -295,6 +307,7 @@ impl Material {
             normal_scale,
             albedo_index,
             normal_index,
+            emissive_index,
             metallic_roughness_index,
             double_sided,
             is_emissive,

@@ -4,7 +4,11 @@ use crate::core::{camera::Camera, transform::ModelTransform};
 #[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct EnvironmentDataBuffer {
     pub sun_direction: glam::Vec3,
+    pub sun_intensity: f32,
+    pub sun_color: glam::Vec3,
     pub shadow_bias: f32,
+    pub skybox_rotation_cos_sin: glam::Vec2,
+    pub _pad_0: [f32; 2],
     pub camera: CameraDataBuffer,
     pub prev_camera: CameraDataBuffer,
     pub shadow_spread: f32,
@@ -14,7 +18,22 @@ pub struct EnvironmentDataBuffer {
     pub voxel_normal_factor: f32,
     pub indirect_sky_intensity: f32,
     pub debug_view: u32,
-    pub pad: f32,
+    pub _pad_1: f32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct FrameMetadataBuffer {
+    pub frame_id: u32,
+    pub taa_enabled: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PostFxSettingsBuffer {
+    pub fxaa_enabled: u32,
+    pub exposure: f32,
+    pub tonemapping: u32,
 }
 
 #[repr(C)]

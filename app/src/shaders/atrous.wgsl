@@ -13,32 +13,34 @@ struct FilterData {
 @group(1) @binding(2) var tex_depth: texture_storage_2d<r32float, read>;
 
 struct Environment {
-	sun_direction: vec3<f32>,
-	shadow_bias: f32,
-	camera: Camera,
-	prev_camera: Camera,
-	shadow_spread: f32,
-	filter_shadows: u32,
-	shadow_filter_radius: f32,
-	max_ambient_distance: u32,
+    sun_direction: vec3<f32>,
+    sun_intensity: f32,
+    sun_color: vec3<f32>,
+    shadow_bias: f32,
+    skybox_rotation: vec2<f32>,
+    camera: Camera,
+    prev_camera: Camera,
+    shadow_spread: f32,
+    filter_shadows: u32,
+    shadow_filter_radius: f32,
+    max_ambient_distance: u32,
     smooth_normal_factor: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }
 struct Camera {
-	view_proj: mat4x4<f32>,
-	inv_view_proj: mat4x4<f32>,
-	ws_position: vec3<f32>,
-	forward: vec3<f32>,
-	near: f32,
-	jitter: vec2<f32>,
-	far: f32,
-	fov: f32,
+    view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
+    ws_position: vec3<f32>,
+    forward: vec3<f32>,
+    near: f32,
+    jitter: vec2<f32>,
+    far: f32,
+    fov: f32,
 }
 struct FrameMetadata {
     frame_id: u32,
     taa_enabled: u32,
-    fxaa_enabled: u32,
 }
 struct Model {
     transform: mat4x4<f32>,
@@ -64,10 +66,10 @@ fn compute_main(in: ComputeIn) {
 
     let center_val = textureLoad(tex_in_illum, pos);
     let center_luma = center_val.r;
-    
+
     let center_depth = textureLoad(tex_depth, pos).r;
     let center_packed = textureLoad(tex_normal, pos).r;
-    
+
     let center = gather_surface(uv + jitter, environment.camera.inv_view_proj, center_depth, center_packed);
     if center.is_sky {
         textureStore(tex_out_illum, pos, center_val);
@@ -102,7 +104,7 @@ fn compute_main(in: ComputeIn) {
 
             let sample_uv = (vec2<f32>(sample_pos) + 0.5) * texel_size;
             let sample = gather_surface(sample_uv + jitter, environment.camera.inv_view_proj, sample_depth, sample_packed);
-            
+
             if sample.is_sky {
                 continue;
             }
@@ -124,7 +126,7 @@ fn gather_variance(pos: vec2<i32>) -> f32 {
         array<f32, 2>(1.0 / 8.0, 1.0 / 16.0)
     );
     var res = 0.0;
-    
+
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let sample_pos = pos + vec2<i32>(x, y);
@@ -230,12 +232,12 @@ fn decode_hit_mask(packed: u32) -> vec3<bool> {
 }
 
 fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
-	let x = f32((packed >> 11u) & 0x3ffu) / 1023.0;
-	let y = f32((packed >> 1u) & 0x3ffu) / 1023.0;
-	let sgn = f32(packed & 1u) * 2.0 - 1.0;
-	var res = vec3<f32>(0.);
-	res.x = x - y;
-	res.y = x + y - 1.0;
-	res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
-	return normalize(res);
+    let x = f32((packed >> 11u) & 0x3ffu) / 1023.0;
+    let y = f32((packed >> 1u) & 0x3ffu) / 1023.0;
+    let sgn = f32(packed & 1u) * 2.0 - 1.0;
+    var res = vec3<f32>(0.);
+    res.x = x - y;
+    res.y = x + y - 1.0;
+    res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
+    return normalize(res);
 }

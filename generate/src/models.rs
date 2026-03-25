@@ -878,8 +878,10 @@ fn create_bg_voxelize_shared(
         albedo_index: i32,
         normal_index: i32,
         metallic_roughness_index: i32,
+        emissive_index: i32,
         double_sided: u32,
         is_emissive: u32,
+        _pad: [f32; 3],
         emissive_factor: glam::Vec3,
         emissive_intensity: f32,
     }
@@ -899,8 +901,10 @@ fn create_bg_voxelize_shared(
                         albedo_index: mat.albedo_index,
                         normal_index: mat.normal_index,
                         metallic_roughness_index: mat.metallic_roughness_index,
+                        emissive_index: mat.emissive_index,
                         double_sided: mat.double_sided as u32,
                         is_emissive: mat.is_emissive as u32,
+                        _pad: [0.0; 3],
                         emissive_factor: mat.emissive_factor,
                         emissive_intensity: mat.emissive_intensity,
                     })

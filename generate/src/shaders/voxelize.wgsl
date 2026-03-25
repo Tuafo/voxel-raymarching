@@ -11,6 +11,7 @@ struct Material {
     albedo_index: i32,
     normal_index: i32,
     metallic_roughness_index: i32,
+    emissive_index: i32,
     double_sided: u32,
     is_emissive: u32,
     emissive_factor: vec3<f32>,
@@ -236,14 +237,19 @@ fn emit_voxel(center: vec3<f32>) {
 
     let material = materials[primitive.material_id];
 
-    var albedo = material.base_albedo;
+    var albedo: vec4<f32>;
     if material.is_emissive != 0u {
         // we just take the emissive value as the albedo in this case, for packing
         // reasonable tradeoff since most emissive voxels should be strong enough to drown the actual albedo anyways
-        // todo sample emsissive texture if it exists
         albedo = vec4(material.emissive_factor, 1.0);
-    } else if material.albedo_index >= 0 {
-        albedo *= textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
+        if material.emissive_index >= 0 {
+            // albedo *= vec4(textureSampleLevel(textures[material.emissive_index], tex_sampler, uv, 0.0).rgb, 1.0);
+        }
+    } else {
+        albedo = material.base_albedo;
+        if material.albedo_index >= 0 {
+            albedo *= textureSampleLevel(textures[material.albedo_index], tex_sampler, uv, 0.0);
+        }
     }
 
     if albedo.a < 0.8 {

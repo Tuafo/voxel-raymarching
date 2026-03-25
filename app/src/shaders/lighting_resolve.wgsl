@@ -14,32 +14,34 @@
 @group(1) @binding(9) var tex_prev_depth: texture_storage_2d<r32float, read>;
 
 struct Environment {
-	sun_direction: vec3<f32>,
-	shadow_bias: f32,
-	camera: Camera,
-	prev_camera: Camera,
-	shadow_spread: f32,
-	filter_shadows: u32,
-	shadow_filter_radius: f32,
-	max_ambient_distance: u32,
+    sun_direction: vec3<f32>,
+    sun_intensity: f32,
+    sun_color: vec3<f32>,
+    shadow_bias: f32,
+    skybox_rotation: vec2<f32>,
+    camera: Camera,
+    prev_camera: Camera,
+    shadow_spread: f32,
+    filter_shadows: u32,
+    shadow_filter_radius: f32,
+    max_ambient_distance: u32,
     smooth_normal_factor: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }
 struct Camera {
-	view_proj: mat4x4<f32>,
-	inv_view_proj: mat4x4<f32>,
-	ws_position: vec3<f32>,
-	forward: vec3<f32>,
-	near: f32,
-	jitter: vec2<f32>,
-	far: f32,
-	fov: f32,
+    view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
+    ws_position: vec3<f32>,
+    forward: vec3<f32>,
+    near: f32,
+    jitter: vec2<f32>,
+    far: f32,
+    fov: f32,
 }
 struct FrameMetadata {
     frame_id: u32,
     taa_enabled: u32,
-    fxaa_enabled: u32,
 }
 struct Model {
     transform: mat4x4<f32>,
@@ -236,7 +238,7 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
 
             let sample_pos = acc_pos + offset - 0.5;
             let sample_texel = vec2<i32>(floor(sample_pos));
-            let sample_uv =  (vec2<f32>(sample_texel) + 0.5) * texel_size;
+            let sample_uv = (vec2<f32>(sample_texel) + 0.5) * texel_size;
 
             if any(sample_pos < vec2(0.0)) || any(sample_pos >= vec2<f32>(dimensions)) {
                 continue;
@@ -400,12 +402,12 @@ fn decode_hit_mask(packed: u32) -> vec3<bool> {
 }
 
 fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
-	let x = f32((packed >> 11u) & 0x3ffu) / 1023.0;
-	let y = f32((packed >> 1u) & 0x3ffu) / 1023.0;
-	let sgn = f32(packed & 1u) * 2.0 - 1.0;
-	var res = vec3<f32>(0.);
-	res.x = x - y;
-	res.y = x + y - 1.0;
-	res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
-	return normalize(res);
+    let x = f32((packed >> 11u) & 0x3ffu) / 1023.0;
+    let y = f32((packed >> 1u) & 0x3ffu) / 1023.0;
+    let sgn = f32(packed & 1u) * 2.0 - 1.0;
+    var res = vec3<f32>(0.);
+    res.x = x - y;
+    res.y = x + y - 1.0;
+    res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
+    return normalize(res);
 }

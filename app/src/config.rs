@@ -12,6 +12,9 @@ pub struct Config {
     pub render_scale: f32,
     pub sun_altitude: f32,
     pub sun_azimuth: f32,
+    pub sun_color: glam::Vec3,
+    pub sun_intensity: f32,
+    pub skybox_rotation: f32,
     pub shadow_bias: f32,
     pub shadow_spread: f32,
     pub filter_shadows: bool,
@@ -22,6 +25,8 @@ pub struct Config {
     pub view: DebugView,
     pub fxaa: bool,
     pub taa: bool,
+    pub exposure: f32,
+    pub tonemapping: TonemappingAlgorithm,
     pub max_fps: Option<u32>,
     pub print_debug_info: bool,
 }
@@ -37,17 +42,22 @@ impl Default for Config {
             voxel_scale: 1,
             render_scale: 0.5,
             sun_azimuth: -2.5,
-            sun_altitude: 1.3,
+            sun_altitude: 0.95,
+            sun_color: glam::vec3(1.0, 0.95, 0.9),
+            sun_intensity: 7.5,
+            skybox_rotation: 2.8,
             shadow_bias: 3.2,
             shadow_spread: 0.05,
             filter_shadows: true,
             shadow_filter_radius: 7.0,
             voxel_normal_factor: 0.5,
-            indirect_sky_intensity: 1.0,
+            indirect_sky_intensity: 3.0,
             ambient_ray_max_distance: 500,
-            view: DebugView::Composite,
+            view: Default::default(),
             fxaa: false,
             taa: true,
+            exposure: 2.0,
+            tonemapping: Default::default(),
             max_fps: None,
             print_debug_info: false,
         }
@@ -88,4 +98,18 @@ pub const DEBUG_VIEWS: &'static [(&'static str, DebugView)] = &[
     ("Sky Albedo", DebugView::SkyAlbedo),
     ("Sky Irradiance", DebugView::SkyIrradiance),
     ("Sky Prefiler", DebugView::SkyPrefiler),
+];
+
+#[derive(Debug, PartialEq, Default, Copy, Clone)]
+pub enum TonemappingAlgorithm {
+    Clamp = 0,
+    NarkowiczAces = 1,
+    #[default]
+    TonyMcMapface = 2,
+}
+
+pub const TONEMAPPING_ALGORITHMS: &'static [(&'static str, TonemappingAlgorithm)] = &[
+    ("RGB Clamp", TonemappingAlgorithm::Clamp),
+    ("Narkowicz ACES", TonemappingAlgorithm::NarkowiczAces),
+    ("TonyMcMapface", TonemappingAlgorithm::TonyMcMapface),
 ];

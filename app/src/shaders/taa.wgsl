@@ -1,30 +1,32 @@
 struct Environment {
-	sun_direction: vec3<f32>,
-	shadow_bias: f32,
-	camera: Camera,
-	prev_camera: Camera,
-	shadow_spread: f32,
-	filter_shadows: u32,
-	shadow_filter_radius: f32,
-	max_ambient_distance: u32,
+    sun_direction: vec3<f32>,
+    sun_intensity: f32,
+    sun_color: vec3<f32>,
+    shadow_bias: f32,
+    skybox_rotation: vec2<f32>,
+    camera: Camera,
+    prev_camera: Camera,
+    shadow_spread: f32,
+    filter_shadows: u32,
+    shadow_filter_radius: f32,
+    max_ambient_distance: u32,
     smooth_normal_factor: f32,
     indirect_sky_intensity: f32,
     debug_view: u32,
 }
 struct Camera {
-	view_proj: mat4x4<f32>,
-	inv_view_proj: mat4x4<f32>,
-	ws_position: vec3<f32>,
-	forward: vec3<f32>,
-	near: f32,
-	jitter: vec2<f32>,
-	far: f32,
-	fov: f32,
+    view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
+    ws_position: vec3<f32>,
+    forward: vec3<f32>,
+    near: f32,
+    jitter: vec2<f32>,
+    far: f32,
+    fov: f32,
 }
 struct FrameMetadata {
     frame_id: u32,
     taa_enabled: u32,
-    fxaa_enabled: u32,
 }
 struct Model {
     transform: mat4x4<f32>,
@@ -44,13 +46,11 @@ struct Model {
 @group(2) @binding(1) var out_color: texture_storage_2d<rgba16float, write>;
 @group(2) @binding(2) var tex_depth: texture_2d<f32>;
 
-
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
 }
 
 const ACC_ALPHA: f32 = 0.1;
-
 
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
@@ -113,16 +113,6 @@ fn taa(in: ComputeIn) -> vec3<f32> {
     }
     avg_color /= 9.0;
 
-    // depth rejection
-    // probably a dead end...maybe try velocity rejection?
-    // let cur_view_depth = -environment.camera.near / min_depth;
-    // let acc_depth = textureSampleLevel(tex_depth, main_sampler, acc_uv, 0.0).r;
-    // let acc_view_depth = -environment.prev_camera.near / acc_depth;
-    // if cur_view_depth < 1.2 * acc_view_depth {
-    //     // return ycocg_to_rgb(cur_color);
-    //     return vec3(0.0, 1.0, 0.0);
-    // }
-
     var acc_color = sample_catmull_rom_5(acc_uv, vec2<f32>(dimensions));
     acc_color = rgb_to_ycocg(acc_color);
     acc_color = clamp(acc_color, min_color, max_color);
@@ -182,7 +172,6 @@ fn clip_aabb(bds_min: vec3<f32>, bds_max: vec3<f32>, p: vec3<f32>, q: vec3<f32>)
 
     return p + r;
 }
-
 
 // 5-tap approximation of of Catmull-Rom filter
 // very similar results to 9-tap

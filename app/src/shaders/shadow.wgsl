@@ -30,7 +30,10 @@ struct VoxelLighting {
 
 struct Environment {
     sun_direction: vec3<f32>,
+    sun_intensity: f32,
+    sun_color: vec3<f32>,
     shadow_bias: f32,
+    skybox_rotation: vec2<f32>,
     camera: Camera,
     prev_camera: Camera,
     shadow_spread: f32,
@@ -54,7 +57,6 @@ struct Camera {
 struct FrameMetadata {
     frame_id: u32,
     taa_enabled: u32,
-    fxaa_enabled: u32,
 }
 struct Model {
     transform: mat4x4<f32>,
@@ -84,7 +86,7 @@ fn compute_main(in: ComputeIn) {
 
     let noise = hash_noise(visible.leaf_index);
 
-    if !trace_shadow(noise, voxel_center, in.local_index) {
+    if trace_shadow(noise, voxel_center, in.local_index) {
         var res: VoxelLighting;
         res.shadow = 1.0;
         voxel_lighting[in.id.x] = pack_voxel_lighting(res);
