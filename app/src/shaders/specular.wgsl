@@ -86,13 +86,14 @@ const PI = 3.14159265359;
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
     let pos = vec2<i32>(in.id.xy);
-    let dimensions = vec2<i32>(textureDimensions(tex_depth).xy);
+    let dimensions = vec2<i32>(textureDimensions(tex_out_specular).xy);
     let texel_size = 1.0 / vec2<f32>(dimensions);
 
     let uv = (vec2<f32>(pos) + 0.5) * texel_size;
-    let uv_jittered = (vec2<f32>(pos) + environment.camera.jitter) * texel_size;
+    let uv_jittered = (vec2<f32>(pos) + environment.camera.jitter * 0.5) * texel_size;
 
-    let ray_length = textureLoad(tex_depth, pos).r;
+    // let quadrant_depth = textureGather
+    let ray_length = textureLoad(tex_depth, pos * 2).r;
     if ray_length < 0.0 {
         // primary ray missed
         textureStore(tex_out_specular, pos, vec4(1.0));
@@ -101,7 +102,7 @@ fn compute_main(in: ComputeIn) {
 
     let ray = primary_ray(select(uv_jittered, uv, frame.taa_enabled == 0u));
 
-    let packed = textureLoad(tex_normal, pos).r;
+    let packed = textureLoad(tex_normal, pos * 2).r;
     let voxel = unpack_voxel(packed);
 
     let ls_normal = normalize(model.inv_normal_transform * voxel.ws_normal);
@@ -111,7 +112,7 @@ fn compute_main(in: ComputeIn) {
 
     var trace = trace_specular(pos, noise, ls_pos, ls_normal, voxel.ls_hit_normal, voxel.roughness);
 
-    textureStore(tex_out_specular, pos, vec4(trace.specular, 1.0));
+    textureStore(tex_out_specular, pos, vec4(trace.specular, select(1.0, -1.0, trace.hit)));
 
     if !trace.valid {
         textureStore(tex_out_specular_velocity, pos, vec4(0.0));

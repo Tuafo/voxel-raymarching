@@ -146,10 +146,12 @@ fn compute_main(in: ComputeIn) {
             color = vec3(surface.shadow);
         }
         case 8u {
-            color = surface.irradiance;
+            // color = surface.irradiance;
+            color = specc;
         }
         case 9u {
             color = vec3(surface.specular);
+            // color = vec3(surface.ao);
         }
         case 10u {
             color = vec3(abs(velocity), 0.0);
@@ -225,19 +227,21 @@ fn pbr(in: PbrInput) -> vec3<f32> {
             R.x * environment.skybox_rotation.y + R.y * environment.skybox_rotation.x,
             R.z,
         );
-        let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, sky_reflect_dir.xzy, in.roughness * 5.0).rgb * environment.indirect_sky_intensity;
+        let sky_prefilter = textureSampleLevel(tex_prefilter, sampler_linear, sky_reflect_dir.xzy, in.roughness * 4.0).rgb * environment.indirect_sky_intensity;
         let sky_brdf = textureSampleLevel(tex_brdf_lut, sampler_linear, vec2(ndv, in.roughness), 0.0).rg;
 
         let diffuse = k_d * in.irradiance * in.albedo / PI;
 
-        // let smoothing = exp2(-16.0 * in.roughness - 1.0);
-        // let specular_occlusion = saturate(pow(ndv + in.ao, smoothing) - 1.0 + in.ao);
+        let smoothing = exp2(-16.0 * in.roughness - 1.0);
+        let specular_occlusion = saturate(pow(ndv + 1.0 - in.ao, smoothing) - 1.0 + (1.0 - in.ao));
 
-        // let ibl_occluded = specular_occlusion * sky_prefilter;
-        // specc = ibl_occluded;
+        let ibl_occluded = specular_occlusion * sky_prefilter;
+        specc = ibl_occluded;
 
         // let specular = 1.0 * (f_0 * sky_brdf.x + sky_brdf.y);
+        // specc = select(ibl_occluded, in.specular, in.roughness < 0.4);
         let specular = in.specular * (f_0 * sky_brdf.x + sky_brdf.y);
+        // let specular = specc * (f_0 * sky_brdf.x + sky_brdf.y);
 
         indirect = diffuse + specular;
     }

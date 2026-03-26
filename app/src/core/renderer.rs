@@ -1048,6 +1048,11 @@ impl Renderer {
             height: self.size.y,
             depth_or_array_layers: 1,
         };
+        let quarter_size = wgpu::Extent3d {
+            width: self.size.x.div_ceil(2),
+            height: self.size.y.div_ceil(2),
+            depth_or_array_layers: 1,
+        };
 
         self.textures.gbuffer_albedo = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gbuffer_albedo"),
@@ -1137,7 +1142,7 @@ impl Renderer {
         self.textures.gbuffer_specular_velocity =
             Some(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("gbuffer_specular_velocity"),
-                size,
+                size: quarter_size,
                 sample_count: 1,
                 format: wgpu::TextureFormat::Rgba16Float,
                 dimension: wgpu::TextureDimension::D2,
@@ -1154,7 +1159,7 @@ impl Renderer {
 
         self.textures.gbuffer_specular = Some(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gbuffer_specular"),
-            size: size,
+            size: quarter_size,
             sample_count: 1,
             format: wgpu::TextureFormat::Rgba16Float,
             dimension: wgpu::TextureDimension::D2,
@@ -1172,7 +1177,7 @@ impl Renderer {
         self.textures.gbuffer_acc_specular =
             Some(device.create_texture_swap(&wgpu::TextureDescriptor {
                 label: Some("gbuffer_acc_specular"),
-                size: size,
+                size,
                 sample_count: 1,
                 format: wgpu::TextureFormat::Rgba16Float,
                 dimension: wgpu::TextureDimension::D2,
@@ -1307,17 +1312,17 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
                         resource: wgpu::BindingResource::TextureView(&view_gbuffer_specular),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 3,
+                        binding: 2,
                         resource: wgpu::BindingResource::TextureView(
                             &view_gbuffer_specular_velocity,
                         ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&view_gbuffer_velocity),
                     },
                 ],
             }));
@@ -1688,8 +1693,10 @@ impl Renderer {
             pass.set_bind_group(2, &self.bind_groups.specular_static, &[]);
             pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
+            let size_quarter = self.size.map(|x| x.div_ceil(2));
+
             pass.insert_debug_marker("specular");
-            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+            pass.dispatch_workgroups(size_quarter.x.div_ceil(8), size_quarter.y.div_ceil(8), 1);
         }
 
         // specular resolve pass

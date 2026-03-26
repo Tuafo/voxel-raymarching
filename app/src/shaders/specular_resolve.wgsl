@@ -1,7 +1,7 @@
 @group(0) @binding(0) var main_sampler: sampler;
-@group(0) @binding(1) var tex_velocity: texture_storage_2d<rgba16float, read>;
-@group(0) @binding(2) var tex_cur: texture_storage_2d<rgba16float, read>;
-@group(0) @binding(3) var tex_specular_velocity: texture_storage_2d<rgba16float, read>;
+@group(0) @binding(1) var tex_cur: texture_storage_2d<rgba16float, read>;
+@group(0) @binding(2) var tex_specular_velocity: texture_storage_2d<rgba16float, read>;
+@group(0) @binding(3) var tex_velocity: texture_storage_2d<rgba16float, read>;
 
 @group(1) @binding(0) var tex_out: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(1) var tex_acc: texture_storage_2d<rgba16float, read>;
@@ -50,6 +50,8 @@ struct Model {
 @group(2) @binding(1) var<uniform> frame: FrameMetadata;
 @group(2) @binding(2) var<uniform> model: Model;
 
+const MAX_HISTORY_LENGTH: u32 = 1024;
+
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(local_invocation_index) index: u32,
@@ -60,48 +62,61 @@ struct ComputeIn {
 @compute @workgroup_size(8, 8, 1)
 fn compute_main(in: ComputeIn) {
     let cur_pos = vec2<i32>(in.id.xy);
-    let dimensions = textureDimensions(tex_velocity);
+    let dimensions = textureDimensions(tex_depth);
+    let texel_size = 1.0 / vec2<f32>(dimensions);
 
-    let cur = textureLoad(tex_cur, cur_pos).rgb;
+    let cur_uv = (vec2<f32>(cur_pos) + 0.5) * texel_size;
+    let half_pos = (vec2<f32>(cur_pos) - 0.5) / 2.0;
+    let half_base = vec2<i32>(floor(half_pos));
+    let f = fract(half_pos);
 
-    let cur_color = vec3<f32>(cur);
-    var cur_moments: vec2<f32>;
+    let w_spatial = array<f32, 4>(
+        (1.0 - f.x) * (1.0 - f.y),
+        f.x * (1.0 - f.y),
+        (1.0 - f.x) * f.y,
+        f.x * f.y
+    );
+    let offsets = array<vec2<i32>, 4>(
+        vec2(0, 0), vec2(1, 0), vec2(0, 1), vec2(1, 1)
+    );
+    var cur_color = vec3(0.0);
+    var weight_sum = 0.0;
+    for (var i = 0u; i < 4u; i++) {
+        let half_sample_pos = half_base + offsets[i];
 
-    cur_moments.r = cur_color.r;
-    cur_moments.g = cur_moments.r * cur_moments.r;
+        let weight = w_spatial[i];
+        let sample = textureLoad(tex_cur, half_sample_pos).rgb;
+
+        cur_color += sample * weight;
+        weight_sum += weight;
+    }
+    cur_color /= weight_sum;
+
+    // let cur = textureLoad(tex_cur, cur_pos / 2).rgb;
+
+    // let cur_color = vec3<f32>(cur);
 
     let acc = reproject(cur_pos);
 
     var res_color: vec3<f32>;
-    var res_moments: vec2<f32>;
     var history_len: f32;
 
     if acc.reject_history {
         res_color = cur_color;
-        res_moments = cur_moments;
         history_len = 1.0;
     } else {
-        history_len = min(128.0, acc.history_len + 1.0);
+        history_len = min(f32(MAX_HISTORY_LENGTH), acc.history_len + 1.0);
 
-        let history_ratio = history_len / 128.0;
+        let history_ratio = history_len / f32(MAX_HISTORY_LENGTH);
         let k = mix(0.5, 3.0, history_ratio);
 
         let acc_sample = acc.color;
-
-        // TODO add clamping parameters to customize each alpha
-        let alpha_moments = 1.0 / f32(history_len);
-        res_moments = mix(acc.moments, cur_moments, alpha_moments);
 
         let alpha_color = 1.0 / f32(history_len);
         res_color = mix(acc_sample, cur_color, alpha_color);
     }
 
-    let spec_vel_data = textureLoad(tex_specular_velocity, cur_pos);
-    let is_spec_hit = spec_vel_data.z > 0.0;
-
-    let encoded_history = select(-history_len, history_len, is_spec_hit);
-
-    textureStore(tex_out, cur_pos, vec4<f32>(res_color, encoded_history));
+    textureStore(tex_out, cur_pos, vec4<f32>(res_color, history_len));
 }
 
 struct ReprojectResult {
@@ -112,7 +127,7 @@ struct ReprojectResult {
 }
 
 fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
-    let dimensions = vec2<i32>(textureDimensions(tex_velocity).xy);
+    let dimensions = vec2<i32>(textureDimensions(tex_depth).xy);
     let texel_size = 1.0 / vec2<f32>(dimensions);
 
     let cur_jitter = texel_size * select(vec2(0.0), environment.camera.jitter - 0.5, frame.taa_enabled != 0u);
@@ -120,9 +135,7 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
 
     let cur_uv = (vec2<f32>(cur_pos) + 0.5) * texel_size;
 
-    let cur_depth = textureLoad(tex_depth, cur_pos).r;
-    let cur_packed = textureLoad(tex_normal, cur_pos).r;
-    let cur = gather_surface(cur_uv + cur_jitter, environment.camera.inv_view_proj, cur_depth, cur_packed);
+    let cur = gather_surface(cur_uv + cur_jitter, cur_pos, false);
 
     var res: ReprojectResult;
     res.reject_history = true;
@@ -134,19 +147,13 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
         return res;
     }
 
-    let spec_vel_data = textureLoad(tex_specular_velocity, cur_pos);
-    let virtual_velocity = spec_vel_data.rg;
-    let is_spec_hit = spec_vel_data.z > 0.0; // 1.0 is hit, -1.0 is sky
-
-    let prev_clip = environment.prev_camera.view_proj * vec4<f32>(cur.ws_pos, 1.0);
-    let prev_ndc = prev_clip.xy / prev_clip.w;
-    let prev_surface_uv = prev_ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-    let surface_velocity = cur_uv - prev_surface_uv;
+    let virtual_velocity = textureLoad(tex_specular_velocity, cur_pos / 2).rg;
+    let surface_velocity = textureLoad(tex_velocity, cur_pos).rg;
 
     // blend between standard diffuse velocity -> parallax specular velocity based on roughness (1-0)
-    // squaring roughness seems to work alright here
+    // stepping roughness seems to work alright here
     // it's all a big old approximation anyways
-    let roughness_weight = saturate(cur.roughness * cur.roughness);
+    let roughness_weight = select(0.0, 1.0, cur.roughness > 0.3);
     let velocity = mix(virtual_velocity, surface_velocity, roughness_weight);
 
     let acc_uv = cur_uv - velocity;
@@ -185,9 +192,7 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
                 continue;
             }
 
-            let acc_depth = textureLoad(tex_prev_depth, sample_texel).r;
-            let acc_packed = textureLoad(tex_prev_normal, sample_texel).r;
-            let acc = gather_surface(sample_uv + acc_jitter, environment.prev_camera.inv_view_proj, acc_depth, acc_packed);
+            let acc = gather_surface(sample_uv + acc_jitter, sample_texel, true);
 
             if is_reprojection_valid(cur, acc) {
                 let weight = w[i];
@@ -206,14 +211,7 @@ fn reproject(cur_pos: vec2<i32>) -> ReprojectResult {
     }
 
     if !res.reject_history {
-        let raw_history = textureLoad(tex_acc, vec2<i32>(acc_pos)).a;
-        let history_is_hit = raw_history > 0.0;
-
-        if raw_history != 0.0 && is_spec_hit != history_is_hit {
-            res.reject_history = true; // secondary hit -> sky counts as a rejection
-        } else {
-            res.history_len = abs(raw_history);
-        }
+        res.history_len = textureLoad(tex_acc, vec2<i32>(acc_pos)).a;
     }
 
     return res;
@@ -245,7 +243,20 @@ struct SurfaceData {
     roughness: f32,
 }
 
-fn gather_surface(uv: vec2<f32>, inv_view_proj: mat4x4<f32>, depth: f32, packed: u32) -> SurfaceData {
+fn gather_surface(uv: vec2<f32>, pos: vec2<i32>, is_prev: bool) -> SurfaceData {
+    var depth: f32;
+    var packed: u32;
+    var inv_view_proj: mat4x4<f32>;
+    if is_prev {
+        depth = textureLoad(tex_prev_depth, pos).r;
+        packed = textureLoad(tex_prev_normal, pos).r;
+        inv_view_proj = environment.prev_camera.inv_view_proj;
+    } else {
+        depth = textureLoad(tex_depth, pos).r;
+        packed = textureLoad(tex_normal, pos).r;
+        inv_view_proj = environment.camera.inv_view_proj;
+    }
+
     if depth < 0.0 {
         var res: SurfaceData;
         res.is_sky = true;

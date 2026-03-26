@@ -169,7 +169,8 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
     let velocity = cur_uv - prev_uv;
 
     let albedo = palette_color(voxel.palette_index);
-    voxel.roughness = 0.01;
+    // voxel.roughness = 0.01;
+    voxel.roughness *= 0.28;
 
     let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal, voxel.roughness);
     let ws_normal = normalize(model.normal_transform * ls_normal);
