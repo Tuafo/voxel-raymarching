@@ -51,7 +51,7 @@ struct Model {
 @group(2) @binding(1) var<uniform> frame: FrameMetadata;
 @group(2) @binding(2) var<uniform> model: Model;
 
-const MAX_HISTORY_LENGTH: u32 = 60;
+const MAX_HISTORY_LENGTH: u32 = 260;
 
 struct ComputeIn {
     @builtin(global_invocation_id) id: vec3<u32>,

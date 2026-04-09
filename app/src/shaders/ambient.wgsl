@@ -53,7 +53,7 @@ struct Environment {
     camera: Camera,
     prev_camera: Camera,
     shadow_spread: f32,
-    filter_shadows: u32,
+    per_voxel_secondary: u32,
     shadow_filter_radius: f32,
     max_ambient_distance: u32,
     smooth_normal_factor: f32,
@@ -104,12 +104,32 @@ fn compute_main(in: ComputeIn) {
     // let noise = blue_noise(vec2(voxel_pos.xy));
     let noise = hash_noise(visible.leaf_index);
 
-    var res = unpack_voxel_lighting(voxel_lighting[in.id.x]);
+    var res = unpack_visible_lighting(voxel_lighting[in.id.x]);
 
     let trace = trace_ambient(noise, voxel_center, in.local_index, voxel.ls_hit_normal);
     res.irradiance = trace.irradiance;
 
-    voxel_lighting[in.id.x] = pack_voxel_lighting(res);
+    voxel_lighting[in.id.x] = pack_visible_lighting(res);
+}
+
+struct VisibleLighting {
+    irradiance: vec3<f32>,
+    shadow: bool,
+    direction: vec3<f32>,
+}
+fn unpack_visible_lighting(packed: array<u32, 3>) -> VisibleLighting {
+    var res: VisibleLighting;
+    res.shadow = bool(packed[2] & 1u);
+    res.direction = decode_normal_octahedral(packed[2] >> 1u);
+    res.irradiance = vec3<f32>(unpack2x16float(packed[0]).xy, unpack2x16float(packed[1]).x);
+    return res;
+}
+fn pack_visible_lighting(val: VisibleLighting) -> array<u32, 3> {
+    var res: array<u32, 3>;
+    res[0] = pack2x16float(val.irradiance.rg);
+    res[1] = pack2x16float(vec2<f32>(val.irradiance.b, 0.0));
+    res[2] = (encode_normal_octahedral(val.direction) << 1u) | select(0u, 1u, val.shadow);
+    return res;
 }
 
 struct AmbientResult {
@@ -119,8 +139,8 @@ struct AmbientResult {
 fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_normal: vec3<f32>) -> AmbientResult {
     let light_dir = normalize(model.inv_normal_transform * environment.sun_direction);
 
-    let u = f32(reverseBits(frame.frame_id % 128)) * 2.3283064365386963e-10;
-    let v = fract(f32(frame.frame_id % 128) * 0.61803398875);
+    let u = f32(reverseBits(frame.frame_id % 111128)) * 2.3283064365386963e-10;
+    let v = fract(f32(frame.frame_id % 111128) * 0.61803398875);
     var sample = fract(vec2(u, v) + noise);
 
     let r = sqrt(sample.x);
@@ -148,31 +168,35 @@ fn trace_ambient(noise: vec2<f32>, ls_pos: vec3<f32>, local_index: u32, ls_norma
         let albedo = palette_color(secondary.palette_index);
 
         var lighting = unpack_voxel_lighting(acc_voxel_lighting[hit.leaf_index]);
-        if lighting.history_length == 0u {
-            //     // lighting.irradiance = textureSampleLevel(tex_skybox, sampler_linear, secondary.normal.xzy, 0.0).rgb;
-            //     // lighting.irradiance = min(lighting.irradiance, vec3(15.0)) * environment.indirect_sky_intensity;
+        if lighting.history_length < 8u {
+            // lighting.irradiance = textureSampleLevel(tex_skybox, sampler_linear, secondary.normal.xzy, 0.0).rgb;
+            // lighting.irradiance = sky_color;
             // lighting.shadow = 0.0;
+            lighting.irradiance = sample_irradiance(hit.local_pos, hit.hit_normal);
             lighting.shadow = select(1.0, 0.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
         }
-        // let shadow = 1.0 - lighting.shadow;
-        let shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
+        // if lighting.history_length == 0u || environment.per_voxel_secondary == 0u {
+        //     lighting.irradiance = sample_irradiance(ls_pos, ls_normal);
+        // }
+        let shadow = 1.0 - lighting.shadow;
+        // let shadow = select(0.0, 1.0, (shadow_mask[hit.leaf_index >> 5u] & (1u << (hit.leaf_index & 31u))) == 1u);
 
         let ndl = max(dot(secondary.normal, environment.sun_direction), 0.0);
 
         let direct = environment.sun_color * environment.sun_intensity * ndl * shadow;
-        var indirect: vec3<f32>;
-        if environment.filter_shadows != 0u {
-            indirect = lighting.irradiance;
-        } else {
-            indirect = sample_irradiance(ls_pos, ls_normal);
-        }
+        // var indirect: vec3<f32>;
+        // if environment.per_voxel_secondary != 0u {
+        //     indirect = lighting.irradiance;
+        // } else {
+        //     indirect = sample_irradiance(ls_pos, ls_normal);
+        // }
 
         var emissive = vec3(0.0);
         if secondary.is_emissive {
             emissive = albedo * secondary.emissive_intensity * 5.0;
         }
 
-        let diffuse = (direct + indirect) * albedo + emissive;
+        let diffuse = (direct + lighting.irradiance) * albedo + emissive;
 
         // var ao_weight = saturate(hit.depth / f32(environment.max_ambient_distance));
         // ao_weight *= ao_weight;
@@ -195,6 +219,8 @@ struct RaymarchResult {
     hit: bool,
     id: u32,
     leaf_index: u32,
+    local_pos: vec3<f32>,
+    hit_normal: vec3<f32>,
     depth: f32,
 }
 
@@ -241,11 +267,16 @@ fn raymarch(ray: Ray) -> RaymarchResult {
             let t_max = min(min(side_distance.x, side_distance.y), side_distance.z);
             let t_total = f32(scene.bounding_size) * t_max;
 
-            // let mask = vec3(t_max) >= side_distance;
+            let local_pos = ray.origin + dir * t_total;
+
+            let mask = vec3(t_max) >= side_distance;
+            let hit_normal = normalize(-vec3<f32>(sign(dir)) * vec3<f32>(mask));
 
             var res: RaymarchResult;
             res.hit = true;
             res.leaf_index = leaf_index;
+            res.hit_normal = hit_normal;
+            res.local_pos = local_pos;
             res.depth = t_total;
             return res;
         }
@@ -454,6 +485,19 @@ fn decode_normal_octahedral(packed: u32) -> vec3<f32> {
     res.y = x + y - 1.0;
     res.z = sgn * (1.0 - abs(res.x) - abs(res.y));
     return normalize(res);
+}
+
+/// encodes world space normal in lower 21 bits of u32
+// uses John White's octahedral packing strategy https://johnwhite3d.blogspot.com/2017/10/signed-octahedron-normal-encoding.html
+fn encode_normal_octahedral(normal: vec3<f32>) -> u32 {
+    var n = normal / (abs(normal.x) + abs(normal.y) + abs(normal.z));
+    var nrm = vec2<f32>(0.);
+    nrm.y = n.y * 0.5 + 0.5;
+    nrm.x = n.x * 0.5 + nrm.y;
+    nrm.y = n.x * -0.5 + nrm.y;
+    let sgn = select(0u, 1u, n.z >= 0.0);
+    let res = (u32(nrm.x * 1023.0 + 0.5) << 11u) | (u32(nrm.y * 1023.0 + 0.5) << 1u) | sgn;
+    return res;
 }
 
 struct LeafVoxel {

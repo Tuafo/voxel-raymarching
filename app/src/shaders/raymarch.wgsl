@@ -154,6 +154,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
 
     let albedo = palette_color(voxel.palette_index);
     voxel.roughness *= environment.roughness_multiplier;
+    // voxel.metallic = 1.0;
 
     let ls_normal = align_per_voxel_normal(hit.hit_normal, voxel.normal, voxel.roughness);
     let ws_normal = normalize(model.normal_transform * ls_normal);
@@ -165,7 +166,7 @@ fn trace_scene(pos: vec2<i32>, local_index: u32) -> SceneResult {
         var visible: VisibleVoxel;
         visible.data = packed;
         visible.leaf_index = hit.leaf_index;
-        visible.pos = pack_voxel_pos(vec3<u32>(hit.local_pos));
+        visible.pos = pack_voxel_pos(hit.voxel_pos);
         visible_voxels[map_result.visible_index] = visible;
     }
 
@@ -191,6 +192,7 @@ struct RaymarchResult {
     leaf_index: u32,
     hit_normal: vec3<f32>,
     local_pos: vec3<f32>,
+    voxel_pos: vec3<u32>,
     depth: f32,
     hit_mask: vec3<bool>,
 }
@@ -236,6 +238,8 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
         // if we reached a leaf, we're done
         if chunk_contains_child(chunk.mask, child_offset) && chunk_is_leaf(chunk.child_index) {
             pos = mirrored_pos_unchecked(pos, dir);
+            let shift = 23u - scene.index_levels * 2u;
+            let voxel_pos = (bitcast<vec3<u32>>(pos) & vec3(0x7fffffu)) >> vec3(shift);
 
             let leaf_index = (chunk.child_index >> 1u) + mask_packed_offset(chunk.mask, child_offset);
 
@@ -252,10 +256,9 @@ fn raymarch(ray: Ray, local_index: u32) -> RaymarchResult {
             res.leaf_index = leaf_index;
             res.hit_normal = hit_normal;
             res.depth = t_total;
-            res.local_pos = ray.ls_origin + dir * t_total;
+            res.local_pos = local_pos;
+            res.voxel_pos = voxel_pos;
             res.hit_mask = mask;
-
-            // res.voxel.palette_index = i;
             return res;
         }
 
@@ -301,32 +304,35 @@ struct MapResult {
 }
 
 fn map_insert(leaf_index: u32) -> MapResult {
-    let n = arrayLength(&voxel_map);
+    let n = arrayLength(&voxel_map) >> 1u;
 
     /// note - this will stop working past 1 billion leaf_index (# leaf index chunks * 64)
-    let key = (leaf_index << 2u) | (frame.frame_id & 3u);
+    // let key = (leaf_index << 2u) | (frame.frame_id & 3u);
+    let key = leaf_index;
     var index = hash_murmur3(leaf_index) % n;
 
     for (var _i = 0u; _i < 10u; _i++) {
-        let cur = atomicLoad(&voxel_map[index]);
+        let cur = atomicLoad(&voxel_map[index << 1u]);
 
         if cur == key {
             return MapResult();
         }
-        if (cur == 0u) || ((cur & 3u) != (frame.frame_id & 3u)) {
-            let res = atomicCompareExchangeWeak(&voxel_map[index], cur, key);
+        if cur == 0u {
+            let res = atomicCompareExchangeWeak(&voxel_map[index << 1u], cur, key);
 
             if res.exchanged {
                 var res: MapResult;
                 res.inserted = true;
                 res.visible_index = atomicAdd(&voxel_info.visible_count, 1u);
+
+                atomicStore(&voxel_map[(index << 1u) + 1u], res.visible_index);
                 return res;
             }
             if res.old_value == key {
                 return MapResult();
             }
         }
-        index = (index + 3u) % n;
+        index = (index + 3u) % n; // jump by 3, idk works slightly better
     }
 
     // for tracking
@@ -344,8 +350,8 @@ fn pack_voxel_pos(pos: vec3<u32>) -> array<u32, 2> {
 fn unpack_voxel_pos(packed: array<u32, 2>) -> vec3<u32> {
     return vec3<u32>(
         packed[1] & 0xFFFFFu,
-        ((packed[0] & 0x3FFu) << 10u) | (packed[1] >> 20u),
-        packed[0] >> 10u,
+        ((packed[0] & 0x3FFu) << 10u) | ((packed[1] >> 20u) & 0x3FFu),
+        (packed[0] >> 10u) & 0xFFFFFu,
     );
 }
 

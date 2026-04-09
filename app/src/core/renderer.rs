@@ -322,6 +322,9 @@ impl Renderer {
                 "resolve_swap",
                 ShaderStages::COMPUTE,
                 (
+                    uniform_buffer(),
+                    storage_buffer().read_only(),
+                    storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     storage_buffer().read_only(),
                     storage_buffer().read_write(),
@@ -1125,14 +1128,26 @@ impl Renderer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: buffers.visible_voxels.as_entire_binding(),
+                        resource: buffers.voxel_scene_metadata.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: buffers.cur_voxel_lighting.as_entire_binding(),
+                        resource: buffers.voxel_index_chunks.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
+                        resource: buffers.voxel_map.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: buffers.visible_voxels.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: buffers.cur_voxel_lighting.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
                         resource: buffers.acc_voxel_lighting.as_entire_binding(),
                     },
                 ],
@@ -2044,6 +2059,7 @@ impl Renderer {
         let mut encoder = device.create_command_encoder(&Default::default());
 
         encoder.clear_buffer(&self.buffers.voxel_map_info, 0, None);
+        encoder.clear_buffer(&self.buffers.voxel_map, 0, None);
 
         // shadow occlusion pass
         if self.shadow_update_requested {
@@ -2171,48 +2187,48 @@ impl Renderer {
             pass.dispatch_workgroups_indirect(&self.buffers.visible_indirect_args, 0);
         }
 
-        // // specular pass
-        // {
-        //     let mut pass = encoder.begin_compute_pass_timed("Specular", &mut self.timing);
+        // specular pass
+        {
+            let mut pass = encoder.begin_compute_pass_timed("Specular", &mut self.timing);
 
-        //     pass.set_pipeline(&self.pipelines.specular);
-        //     pass.set_bind_group(0, &self.bind_groups.specular_gbuffer, &[]);
-        //     pass.set_bind_group_swap(1, &self.bind_groups.specular_swap, &[], self.frame_id);
-        //     pass.set_bind_group(2, &self.bind_groups.specular_static, &[]);
-        //     pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
+            pass.set_pipeline(&self.pipelines.specular);
+            pass.set_bind_group(0, &self.bind_groups.specular_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &self.bind_groups.specular_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.specular_static, &[]);
+            pass.set_bind_group(3, &self.bind_groups.per_frame_shared, &[]);
 
-        //     let size_quarter = self.size.map(|x| x.div_ceil(2));
+            let size_quarter = self.size.map(|x| x.div_ceil(2));
 
-        //     pass.insert_debug_marker("specular");
-        //     pass.dispatch_workgroups(size_quarter.x.div_ceil(8), size_quarter.y.div_ceil(8), 1);
-        // }
+            pass.insert_debug_marker("specular");
+            pass.dispatch_workgroups(size_quarter.x.div_ceil(8), size_quarter.y.div_ceil(8), 1);
+        }
 
-        // // specular spatial filter pass
-        // {
-        //     let mut pass =
-        //         encoder.begin_compute_pass_timed("Specular Spatial Filter", &mut self.timing);
+        // specular spatial filter pass
+        {
+            let mut pass =
+                encoder.begin_compute_pass_timed("Specular Spatial Filter", &mut self.timing);
 
-        //     pass.set_pipeline(&self.pipelines.specular_spatial);
-        //     pass.set_bind_group(0, &self.bind_groups.spec_spatial_gbuffer, &[]);
-        //     pass.set_bind_group_swap(1, &self.bind_groups.specular_swap, &[], self.frame_id);
-        //     pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+            pass.set_pipeline(&self.pipelines.specular_spatial);
+            pass.set_bind_group(0, &self.bind_groups.spec_spatial_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &self.bind_groups.specular_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
 
-        //     pass.insert_debug_marker("specular spatial");
-        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
-        // }
+            pass.insert_debug_marker("specular spatial");
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        }
 
-        // // specular resolve pass
-        // {
-        //     let mut pass = encoder.begin_compute_pass_timed("Specular Resolve", &mut self.timing);
+        // specular resolve pass
+        {
+            let mut pass = encoder.begin_compute_pass_timed("Specular Resolve", &mut self.timing);
 
-        //     pass.set_pipeline(&self.pipelines.specular_resolve);
-        //     pass.set_bind_group(0, &self.bind_groups.spec_resolve_gbuffer, &[]);
-        //     pass.set_bind_group_swap(1, &self.bind_groups.spec_resolve_swap, &[], self.frame_id);
-        //     pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
+            pass.set_pipeline(&self.pipelines.specular_resolve);
+            pass.set_bind_group(0, &self.bind_groups.spec_resolve_gbuffer, &[]);
+            pass.set_bind_group_swap(1, &self.bind_groups.spec_resolve_swap, &[], self.frame_id);
+            pass.set_bind_group(2, &self.bind_groups.per_frame_shared, &[]);
 
-        //     pass.insert_debug_marker("specular resolve");
-        //     pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
-        // }
+            pass.insert_debug_marker("specular resolve");
+            pass.dispatch_workgroups(self.size.x.div_ceil(8), self.size.y.div_ceil(8), 1);
+        }
 
         // deferred pass
         {

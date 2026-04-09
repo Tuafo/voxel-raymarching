@@ -172,10 +172,11 @@ fn compute_main(in: ComputeIn) {
         }
         case 9u {
             // color = vec3(surface.specular);
-            color = lighting.irradiance;
+            color = sample_irradiance(ls_pos, voxel.ls_hit_normal);
         }
         case 10u {
-            color = vec3(abs(velocity), 0.0);
+            // color = vec3(abs(velocity), 0.0);
+            color = sample_irradiance_debug();
         }
         case 11u {
             color = textureSampleLevel(tex_skybox, sampler_linear, sky_ray_dir, 0.0).rgb;
@@ -408,6 +409,24 @@ fn unpack_voxel_lighting(packed: array<u32, 3>) -> VoxelLighting {
 /// --------------- irradiance probe utils ---------------
 
 const PROBE_DEPTH_SCALE: f32 = 1.0 / 40.0;
+
+fn sample_irradiance_debug() -> vec3<f32> {
+    let pos = (model.inv_transform * vec4(environment.camera.ws_position, 1.0)).xyz;
+    // samples the nearest irradiance probe as if it is the skybox
+    let grid_pos = vec3<i32>(round(pos / scene.probe_scale));
+    let probe = get_probe(grid_pos);
+    if !probe.exists {
+        return vec3(1.0, 0.0, 0.0);
+    }
+
+    let ws_pos = (model.transform * vec4(probe.pos, 1.0)).xyz;
+    let ls_dir = normalize(sky_ray_dir.xzy);
+    let val = sample_probe(probe.id, ls_dir, ls_dir).irradiance;
+
+    // let grid_base_pos = (vec3<f32>(grid_base) + 0.5) * scene.probe_scale;
+
+    return val;
+}
 
 fn sample_irradiance(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     // let grid_cur = vec3<u32>(pos / scene.probe_scale);

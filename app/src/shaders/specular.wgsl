@@ -213,7 +213,7 @@ fn trace_specular(pos: vec2<i32>, noise: vec3<f32>, ls_pos: vec3<f32>, ls_normal
         if lighting.history_length == 0u {
             // lighting.irradiance = textureSampleLevel(tex_skybox, sampler_linear, secondary.normal.xzy, 0.0).rgb;
             // lighting.irradiance = min(lighting.irradiance, vec3(15.0)) * environment.indirect_sky_intensity;
-            lighting.shadow = 0.0;
+            // lighting.shadow = 0.0;
         }
 
         let ndl = max(dot(secondary.normal, environment.sun_direction), 0.0);
