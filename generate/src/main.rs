@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use flate2::write::ZlibEncoder;
 use generate::{
-    LIGHTMAP_FILE_EXT, MAX_STORAGE_BUFFER_BINDING_SIZE, MODEL_FILE_EXT, generate_lighting, voxelize,
+    LIGHTMAP_FILE_EXT, MAX_STORAGE_BUFFER_BINDING_SIZE, MODEL_FILE_EXT, PlanetConfig,
+    generate_lighting, voxelize, voxelize_planet,
 };
 use std::{
     fs,
@@ -25,12 +26,64 @@ struct Args {
     /// Voxel scale, in voxels/meter. Larger values generate more voxels.
     #[arg(short, long, default_value_t = 16)]
     scale: u32,
+
+    /// Generate a procedural planet with the given asset name (e.g. `--planet planet`).
+    /// The output is written to app/assets/generated/<name>.voxel and is
+    /// automatically picked up by the build script as MODELS.<name>.
+    #[arg(long)]
+    planet: Option<String>,
+
+    /// Planet radius in voxels (default: 440).
+    #[arg(long, default_value_t = 440.0)]
+    planet_radius: f32,
+
+    /// Planet surface noise amplitude in voxels (default: 24).
+    #[arg(long, default_value_t = 24.0)]
+    planet_amplitude: f32,
+
+    /// Voxels per world unit for the planet (default: 16, matches sponza).
+    #[arg(long, default_value_t = 16)]
+    planet_voxels_per_unit: u32,
+
+    /// Random seed for the planet noise.
+    #[arg(long, default_value_t = 0xC0FFEE)]
+    planet_seed: u32,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
     let (device, queue) = init_device().context("failed to initialize GPU context")?;
+
+    if let Some(name) = &args.planet {
+        let mut cfg = PlanetConfig::default_for(name);
+        cfg.radius = args.planet_radius;
+        cfg.amplitude = args.planet_amplitude;
+        cfg.voxels_per_unit = args.planet_voxels_per_unit;
+        cfg.seed = args.planet_seed;
+
+        eprintln!(
+            "Generating planet '{}' (radius={}, amplitude={}, seed=0x{:x})",
+            name, cfg.radius, cfg.amplitude, cfg.seed
+        );
+
+        let model =
+            voxelize_planet(&device, &queue, &cfg).context("failed to generate planet")?;
+        let data = model
+            .serialize(&device, &queue)
+            .context("failed to serialize planet voxel tree")?;
+
+        let out_dir = Path::new("app/assets/generated");
+        std::fs::create_dir_all(out_dir).context("failed to create output dir")?;
+        let path = out_dir.join(format!("{}.{}", name, MODEL_FILE_EXT));
+        let file = fs::File::create(&path).context("failed to open output planet file")?;
+        let mut enc = ZlibEncoder::new(file, flate2::Compression::best());
+        enc.write_all(&data)
+            .context("failed to write planet voxel tree")?;
+        let mut res = enc.finish().context("failed to finish writing")?;
+        let length = res.stream_position().map(|n| n as f64 / (1024.0 * 1024.0))?;
+        eprintln!("Completed planet {} ({:.2} MB) -> {:?}", name, length, path);
+    }
 
     if args.lightmaps {
         let sources = walk_asset_sources(Path::new("app/assets/lightmaps"), "hdr")
@@ -147,14 +200,12 @@ fn walk_asset_sources(path: &Path, ext: &str) -> Result<Vec<AssetSource>> {
                     Some(name)
                 }
             })
-            .unwrap_or_else(|| {
-                loop {
-                    let name = format!("model_{}", name_fallback_counter);
-                    name_fallback_counter += 1;
-                    if !names.contains(&name) {
-                        names.insert(name.clone());
-                        return name;
-                    }
+            .unwrap_or_else(|| loop {
+                let name = format!("model_{}", name_fallback_counter);
+                name_fallback_counter += 1;
+                if !names.contains(&name) {
+                    names.insert(name.clone());
+                    return name;
                 }
             });
 
