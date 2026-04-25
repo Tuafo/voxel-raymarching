@@ -40,13 +40,8 @@ impl Default for Config {
             init_skybox: LIGHTMAPS.partly_cloudy,
             // init_scene: MODELS.bistro,
             // init_camera_pos: glam::dvec3(30.0, 55.0, 8.0),
-            // init_scene: MODELS.sponza,
-            // init_camera_pos: glam::dvec3(42.0, 10.0, 3.0),
-            // Procedural planet: bounding cube 1024^3 at voxels_per_unit=16
-            // → 64 world units across, planet center at (32, 32, 32),
-            //   surface ~27.5 units from center; camera sits just outside.
-            init_scene: MODELS.planet,
-            init_camera_pos: glam::dvec3(32.0, 32.0, 70.0),
+            init_scene: MODELS.san_miguel,
+            init_camera_pos: glam::dvec3(42.0, 10.0, 3.0),
             // init_scene: MODELS.sponza,
             // init_camera_pos: glam::dvec3(9.0, 14.0, 5.0),
             voxel_scale: 1,

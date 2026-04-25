@@ -40,11 +40,7 @@ impl App {
         }
 
         let mut limits = wgpu::Limits::default();
-        // Bumped to fit large procedural planets (acc_voxel_lighting = leaf_chunks * 3,
-        // which can exceed 1 GiB on the default planet preset).
-        // 2147483644 is the typical adapter cap (2 GiB - 4) on Vulkan/D3D12.
-        limits.max_storage_buffer_binding_size = 2147483644;
-        limits.max_buffer_size = 2147483644;
+        limits.max_storage_buffer_binding_size = 512 * 1024 * 1024;
         limits.max_storage_textures_per_shader_stage = 12;
         limits.max_immediate_size = 32;
 
